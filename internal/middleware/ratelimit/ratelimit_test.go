@@ -255,6 +255,24 @@ func TestKeyExtract_IP_WithTrustedProxies(t *testing.T) {
 	}
 }
 
+func TestKeyExtract_IP_UntrustedRemoteAddr(t *testing.T) {
+	// Trust only 192.168.1.0/24.
+	trusted, err := ParseTrustedProxies([]string{"192.168.1.0/24"})
+	if err != nil {
+		t.Fatalf("ParseTrustedProxies error: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.RemoteAddr = "8.8.8.8:12345" // NOT a trusted proxy
+	req.Header.Set("X-Forwarded-For", "1.2.3.4, 192.168.1.1")
+
+	// RemoteAddr is not trusted, so XFF must be ignored entirely.
+	key := extractKey(req, "ip", trusted)
+	if key != "8.8.8.8" {
+		t.Fatalf("expected 8.8.8.8 (RemoteAddr, untrusted direct client), got %s", key)
+	}
+}
+
 func TestKeyExtract_IP_AllTrusted(t *testing.T) {
 	// Trust everything in 10.0.0.0/8.
 	trusted, err := ParseTrustedProxies([]string{"10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16"})

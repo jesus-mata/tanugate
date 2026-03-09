@@ -153,11 +153,19 @@ func extractKey(r *http.Request, keySource string, trustedProxies []*net.IPNet) 
 // extractIP returns the client IP address for rate-limiting purposes.
 // When trustedProxies is nil or empty, X-Forwarded-For is ignored entirely and
 // the IP is taken from RemoteAddr (safe default).
-// When trustedProxies is configured, the X-Forwarded-For header is walked
-// right-to-left and the first untrusted IP is returned. If every entry is
-// trusted, RemoteAddr is used as a fallback.
+// When trustedProxies is configured, RemoteAddr is first checked against the
+// trusted list — XFF is only consulted if the immediate connection comes from a
+// trusted proxy. The X-Forwarded-For header is then walked right-to-left and
+// the first untrusted IP is returned. If every entry is trusted, RemoteAddr is
+// used as a fallback.
 func extractIP(r *http.Request, trustedProxies []*net.IPNet) string {
 	if len(trustedProxies) == 0 {
+		return remoteAddrIP(r)
+	}
+
+	// Only consult XFF if the immediate connection is from a trusted proxy.
+	remoteIP := net.ParseIP(remoteAddrIP(r))
+	if remoteIP == nil || !isTrusted(remoteIP, trustedProxies) {
 		return remoteAddrIP(r)
 	}
 
@@ -171,6 +179,9 @@ func extractIP(r *http.Request, trustedProxies []*net.IPNet) string {
 		candidate := strings.TrimSpace(parts[i])
 		ip := net.ParseIP(candidate)
 		if ip == nil {
+			slog.Warn("skipping unparseable IP in X-Forwarded-For",
+				"entry", candidate,
+			)
 			continue
 		}
 		if !isTrusted(ip, trustedProxies) {

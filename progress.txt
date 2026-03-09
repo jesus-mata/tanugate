@@ -1,0 +1,56 @@
+## Phase 1: Foundation (Skeleton + Config + Routing + Proxy) — COMPLETE
+
+- Task: Project init, config loading, routing, reverse proxy, middleware chain, graceful shutdown
+- Key decisions:
+  - Single external dep: gopkg.in/yaml.v3; all else stdlib
+  - Env var substitution on raw YAML text before parsing
+  - regexp.MustCompile at startup (fail fast)
+  - One http.Transport per route for connection pooling
+  - RequestID middleware sets header on both request (for upstream propagation) and response
+  - No 405 — router returns 404 when method doesn't match, falls through to next route
+  - Recovery middleware catches panics, returns 500 JSON
+  - UUID v4 via crypto/rand, no external dep
+- Files created:
+  - go.mod, go.sum
+  - config/gateway.yaml (test config)
+  - internal/config/config.go (22 structs, LoadConfig, applyDefaults)
+  - internal/config/config_test.go (8 tests)
+  - internal/middleware/chain.go (Middleware type, Chain composer)
+  - internal/middleware/chain_test.go (3 tests)
+  - internal/middleware/recovery.go (panic recovery)
+  - internal/middleware/recovery_test.go (4 tests)
+  - internal/middleware/requestid.go (UUID v4, context storage)
+  - internal/middleware/requestid_test.go (5 tests)
+  - internal/router/router.go (regex matching, named capture groups, context)
+  - internal/router/router_test.go (9 tests)
+  - internal/proxy/proxy.go (httputil.ReverseProxy, path rewrite, error handler)
+  - internal/proxy/proxy_test.go (7 tests)
+  - internal/integration_test.go (5 tests)
+  - cmd/gateway/main.go (flag parsing, wiring, graceful shutdown)
+- All validations pass: gofmt, go test ./..., go vet ./...
+
+## Phase 2: Observability + Logging — COMPLETE
+
+- Task: Structured JSON logging, /health endpoint, Prometheus metrics
+- Key decisions:
+  - New external dep: github.com/prometheus/client_golang@v1.20.0
+  - Shared WrappedResponseWriter in middleware pkg (idempotent wrapping, captures status+bytes)
+  - Logging middleware uses slog; Debug level logs headers, Info logs core fields
+  - Route name extracted from context via defer (router sets it during handler execution)
+  - Health endpoint bypasses middleware chain, registered directly on mux
+  - Health returns "degraded" if Redis checker fails, "up" otherwise; always 200
+  - Metrics: 7 Prometheus metrics registered (counter, histogram, gauge); CB/ratelimit/upstream metrics registered now but populated in future phases
+  - Each test uses own prometheus.NewRegistry() for isolation
+  - Used collectors.NewProcessCollector/NewGoCollector (non-deprecated API)
+- Files created:
+  - internal/middleware/responsewriter.go (WrappedResponseWriter)
+  - internal/middleware/logging.go (Logging middleware)
+  - internal/middleware/logging_test.go (9 tests)
+  - internal/observability/health.go (HealthHandler, HealthChecker interface)
+  - internal/observability/health_test.go (6 tests)
+  - internal/observability/metrics.go (MetricsCollector, 7 metrics, Middleware)
+  - internal/observability/metrics_test.go (10 tests)
+- Files modified:
+  - cmd/gateway/main.go (wired logging, metrics middleware, /health, /metrics endpoints)
+  - go.mod, go.sum (prometheus dependency)
+- All validations pass: gofmt, go test ./..., go vet ./...

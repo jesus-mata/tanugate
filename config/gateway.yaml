@@ -1,0 +1,54 @@
+server:
+  host: "0.0.0.0"
+  port: 8080
+  read_timeout: 30s
+  write_timeout: 30s
+  idle_timeout: 120s
+  shutdown_timeout: 15s
+
+logging:
+  level: "info"
+
+cors:
+  allowed_origins:
+    - "*"
+  allowed_methods:
+    - "GET"
+    - "POST"
+    - "PUT"
+    - "DELETE"
+  allowed_headers:
+    - "Content-Type"
+    - "Authorization"
+  allow_credentials: false
+  max_age: 3600
+
+rate_limit:
+  backend: "memory"
+
+auth_providers:
+  jwt_default:
+    type: "jwt"
+    jwt:
+      secret: "${JWT_SECRET}"
+      algorithm: "HS256"
+      issuer: "api-gateway"
+
+routes:
+  - name: "user-service"
+    match:
+      path_regex: "^/api/users(?P<path>/.*)?$"
+      methods: ["GET", "POST", "PUT", "DELETE"]
+    upstream:
+      url: "http://localhost:3001"
+      path_rewrite: "/internal/users${path}"
+      timeout: 30s
+
+  - name: "order-service"
+    match:
+      path_regex: "^/api/orders(?P<path>/.*)?$"
+      methods: ["GET", "POST"]
+    upstream:
+      url: "http://localhost:3002"
+      path_rewrite: "/internal/orders${path}"
+      timeout: 30s

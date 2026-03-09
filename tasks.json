@@ -1,0 +1,58 @@
+[
+  {
+    "title": "Phase 1: Foundation (Skeleton + Config + Routing + Proxy)",
+    "number": 1,
+    "plan": "plans/phase1-foundation.md",
+    "depends_on": [],
+    "status": "complete"
+  },
+  {
+    "title": "Phase 2: Observability + Logging",
+    "number": 2,
+    "plan": "plans/phase2-observability.md",
+    "depends_on": [1],
+    "status": "complete"
+  },
+  {
+    "title": "Phase 3: CORS",
+    "number": 3,
+    "plan": "plans/phase3-cors.md",
+    "depends_on": [1],
+    "status": "open"
+  },
+  {
+    "title": "Phase 4: Authentication",
+    "number": 4,
+    "plan": "plans/phase4-authentication.md",
+    "depends_on": [1],
+    "status": "open"
+  },
+  {
+    "title": "Phase 5: Rate Limiting",
+    "number": 5,
+    "plan": "plans/phase5-ratelimit.md",
+    "depends_on": [1, 4],
+    "status": "open"
+  },
+  {
+    "title": "Phase 6: Resilience (Circuit Breaker + Retry)",
+    "number": 6,
+    "plan": "plans/phase6-resilience.md",
+    "depends_on": [1],
+    "status": "open"
+  },
+  {
+    "title": "Phase 7: Request/Response Transformation",
+    "number": 7,
+    "plan": "plans/phase7-transformation.md",
+    "depends_on": [1],
+    "status": "open"
+  },
+  {
+    "title": "Phase 8: Deployment + Polish",
+    "number": 8,
+    "plan": "plans/phase8-deployment.md",
+    "depends_on": [1, 2, 3, 4, 5, 6, 7],
+    "status": "open"
+  }
+]

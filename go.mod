@@ -3,6 +3,7 @@ module github.com/NextSolutionCUU/api-gateway
 go 1.25.0
 
 require (
+	github.com/golang-jwt/jwt/v5 v5.3.1
 	github.com/prometheus/client_golang v1.20.0
 	github.com/prometheus/client_model v0.6.1
 	gopkg.in/yaml.v3 v3.0.1

@@ -54,3 +54,32 @@
   - cmd/gateway/main.go (wired logging, metrics middleware, /health, /metrics endpoints)
   - go.mod, go.sum (prometheus dependency)
 - All validations pass: gofmt, go test ./..., go vet ./...
+
+## Phase 4: Authentication — COMPLETE
+
+- Task: Auth middleware with JWT, API Key, and OIDC strategies behind common Authenticator interface
+- Key decisions:
+  - New external dep: github.com/golang-jwt/jwt/v5@v5.3.1
+  - Authenticator interface with factory dispatch on provider.Type (jwt/apikey/oidc)
+  - Auth middleware reads MatchedRoute from context → looks up provider name → calls Authenticate
+  - Provider "none" or nil auth config → skip auth entirely
+  - JWT: HMAC/RSA/ECDSA support; key material loaded once at construction; Bearer token from Authorization header
+  - API Key: constant-time compare via crypto/subtle.ConstantTimeCompare; configurable header (default X-API-Key)
+  - OIDC: JWKS fetching with background refresh (80% of TTL); JWK→RSA/ECDSA parsing; introspection mode via RFC 7662
+  - OIDC discovery: fetches .well-known/openid-configuration for jwks_uri if only issuer_url set
+  - AuthResult stored in context for downstream middleware (rate limit claim keying)
+  - Error responses: JSON {"error":"unauthorized","message":"..."} format
+  - JWT error classification: expired/signature/generic mapped to specific messages
+- Files created:
+  - internal/middleware/auth/auth.go (interface, factory, middleware, context helpers, writeError)
+  - internal/middleware/auth/auth_test.go (8 tests)
+  - internal/middleware/auth/jwt.go (JWTAuthenticator, key loading, classifyJWTError)
+  - internal/middleware/auth/jwt_test.go (10 tests: HS256, RS256, ES256, expired, wrong sig, issuer, audience, missing, malformed, claims)
+  - internal/middleware/auth/apikey.go (APIKeyAuthenticator, constant-time compare)
+  - internal/middleware/auth/apikey_test.go (5 tests)
+  - internal/middleware/auth/oidc.go (OIDCAuthenticator, jwksCache, discovery, introspection, JWK parsing)
+  - internal/middleware/auth/oidc_test.go (7 tests: JWKS fetch, valid token, unknown kid, introspection active/inactive, discovery, missing header)
+- Files modified:
+  - cmd/gateway/main.go (build auth providers, wire auth.Middleware into global chain)
+  - go.mod, go.sum (golang-jwt dependency)
+- All validations pass: gofmt, go test ./..., go vet ./..., go test -race

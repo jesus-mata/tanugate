@@ -12,6 +12,7 @@ import (
 
 	"github.com/NextSolutionCUU/api-gateway/internal/config"
 	"github.com/NextSolutionCUU/api-gateway/internal/middleware"
+	"github.com/NextSolutionCUU/api-gateway/internal/middleware/auth"
 	"github.com/NextSolutionCUU/api-gateway/internal/observability"
 	"github.com/NextSolutionCUU/api-gateway/internal/proxy"
 	"github.com/NextSolutionCUU/api-gateway/internal/router"
@@ -38,6 +39,18 @@ func main() {
 
 	slog.Info("Starting API Gateway", "port", cfg.Server.Port)
 
+	// Build auth providers.
+	authenticators := make(map[string]auth.Authenticator, len(cfg.AuthProviders))
+	for name, provider := range cfg.AuthProviders {
+		a, err := auth.NewAuthenticator(provider)
+		if err != nil {
+			slog.Error("failed to create auth provider", "name", name, "error", err)
+			os.Exit(1)
+		}
+		authenticators[name] = a
+		slog.Info("Registered auth provider", "name", name, "type", provider.Type)
+	}
+
 	handlers := make(map[string]http.Handler, len(cfg.Routes))
 	for i := range cfg.Routes {
 		handlers[cfg.Routes[i].Name] = proxy.NewProxyHandler(&cfg.Routes[i])
@@ -55,6 +68,7 @@ func main() {
 		middleware.RequestID(),
 		middleware.Logging(logger),
 		metrics.Middleware(),
+		auth.Middleware(authenticators),
 	)
 
 	mux := http.NewServeMux()

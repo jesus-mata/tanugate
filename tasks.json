@@ -25,7 +25,7 @@
     "number": 4,
     "plan": "plans/phase4-authentication.md",
     "depends_on": [1],
-    "status": "open"
+    "status": "complete"
   },
   {
     "title": "Phase 5: Rate Limiting",

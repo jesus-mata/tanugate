@@ -28,6 +28,7 @@ type ServerConfig struct {
 	WriteTimeout    time.Duration `yaml:"write_timeout"`
 	IdleTimeout     time.Duration `yaml:"idle_timeout"`
 	ShutdownTimeout time.Duration `yaml:"shutdown_timeout"`
+	TrustedProxies  []string      `yaml:"trusted_proxies"`
 }
 
 // LoggingConfig holds logging settings.

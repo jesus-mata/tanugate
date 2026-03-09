@@ -21,10 +21,39 @@ type Limiter interface {
 	Allow(ctx context.Context, key string, limit int, window time.Duration) (allowed bool, remaining int, resetAt time.Time, err error)
 }
 
+// ParseTrustedProxies converts a list of CIDR strings (or bare IPs) into
+// parsed []*net.IPNet values. Bare IPs are automatically converted to /32
+// (IPv4) or /128 (IPv6). Returns an error if any entry is invalid.
+func ParseTrustedProxies(cidrs []string) ([]*net.IPNet, error) {
+	if len(cidrs) == 0 {
+		return nil, nil
+	}
+	nets := make([]*net.IPNet, 0, len(cidrs))
+	for _, cidr := range cidrs {
+		if !strings.Contains(cidr, "/") {
+			ip := net.ParseIP(cidr)
+			if ip == nil {
+				return nil, fmt.Errorf("invalid trusted proxy IP: %q", cidr)
+			}
+			bits := 32
+			if ip.To4() == nil {
+				bits = 128
+			}
+			cidr = fmt.Sprintf("%s/%d", ip.String(), bits)
+		}
+		_, ipNet, err := net.ParseCIDR(cidr)
+		if err != nil {
+			return nil, fmt.Errorf("invalid trusted proxy CIDR %q: %w", cidr, err)
+		}
+		nets = append(nets, ipNet)
+	}
+	return nets, nil
+}
+
 // RateLimit returns a middleware that enforces per-route rate limits using the
 // provided Limiter backend. It reads rate limit configuration from the matched
 // route context. Routes without rate_limit config pass through unchanged.
-func RateLimit(limiter Limiter, metrics *observability.MetricsCollector) middleware.Middleware {
+func RateLimit(limiter Limiter, metrics *observability.MetricsCollector, trustedProxies []*net.IPNet) middleware.Middleware {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			mr := router.RouteFromContext(r.Context())
@@ -34,7 +63,7 @@ func RateLimit(limiter Limiter, metrics *observability.MetricsCollector) middlew
 			}
 
 			rl := mr.Config.RateLimit
-			extracted := extractKey(r, rl.KeySource)
+			extracted := extractKey(r, rl.KeySource, trustedProxies)
 			compositeKey := mr.Config.Name + ":" + extracted
 
 			allowed, remaining, resetAt, err := limiter.Allow(
@@ -82,10 +111,10 @@ func RateLimit(limiter Limiter, metrics *observability.MetricsCollector) middlew
 
 // extractKey resolves a rate-limit key from the request based on keySource.
 // Supported formats: "ip", "header:<name>", "claim:<name>".
-func extractKey(r *http.Request, keySource string) string {
+func extractKey(r *http.Request, keySource string, trustedProxies []*net.IPNet) string {
 	switch {
 	case keySource == "" || keySource == "ip":
-		return extractIP(r)
+		return extractIP(r, trustedProxies)
 
 	case strings.HasPrefix(keySource, "header:"):
 		name := strings.TrimPrefix(keySource, "header:")
@@ -94,7 +123,7 @@ func extractKey(r *http.Request, keySource string) string {
 			slog.Warn("rate limit header key empty, falling back to IP",
 				"header", name,
 			)
-			return extractIP(r)
+			return extractIP(r, trustedProxies)
 		}
 		return val
 
@@ -105,32 +134,79 @@ func extractKey(r *http.Request, keySource string) string {
 			slog.Warn("rate limit claim key unavailable (no auth context), falling back to IP",
 				"claim", claimName,
 			)
-			return extractIP(r)
+			return extractIP(r, trustedProxies)
 		}
 		val, ok := ar.Claims[claimName]
 		if !ok {
 			slog.Warn("rate limit claim key not found, falling back to IP",
 				"claim", claimName,
 			)
-			return extractIP(r)
+			return extractIP(r, trustedProxies)
 		}
 		return fmt.Sprintf("%v", val)
 
 	default:
-		return extractIP(r)
+		return extractIP(r, trustedProxies)
 	}
 }
 
-// extractIP returns the client IP from X-Forwarded-For (first entry) or
-// RemoteAddr as a fallback.
-func extractIP(r *http.Request) string {
-	if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
-		parts := strings.SplitN(xff, ",", 2)
-		return strings.TrimSpace(parts[0])
+// extractIP returns the client IP address for rate-limiting purposes.
+// When trustedProxies is nil or empty, X-Forwarded-For is ignored entirely and
+// the IP is taken from RemoteAddr (safe default).
+// When trustedProxies is configured, RemoteAddr is first checked against the
+// trusted list — XFF is only consulted if the immediate connection comes from a
+// trusted proxy. The X-Forwarded-For header is then walked right-to-left and
+// the first untrusted IP is returned. If every entry is trusted, RemoteAddr is
+// used as a fallback.
+func extractIP(r *http.Request, trustedProxies []*net.IPNet) string {
+	if len(trustedProxies) == 0 {
+		return remoteAddrIP(r)
 	}
+
+	// Only consult XFF if the immediate connection is from a trusted proxy.
+	remoteIP := net.ParseIP(remoteAddrIP(r))
+	if remoteIP == nil || !isTrusted(remoteIP, trustedProxies) {
+		return remoteAddrIP(r)
+	}
+
+	xff := r.Header.Get("X-Forwarded-For")
+	if xff == "" {
+		return remoteAddrIP(r)
+	}
+
+	parts := strings.Split(xff, ",")
+	for i := len(parts) - 1; i >= 0; i-- {
+		candidate := strings.TrimSpace(parts[i])
+		ip := net.ParseIP(candidate)
+		if ip == nil {
+			slog.Warn("skipping unparseable IP in X-Forwarded-For",
+				"entry", candidate,
+			)
+			continue
+		}
+		if !isTrusted(ip, trustedProxies) {
+			return candidate
+		}
+	}
+
+	return remoteAddrIP(r)
+}
+
+// remoteAddrIP extracts the IP portion from r.RemoteAddr (host:port).
+func remoteAddrIP(r *http.Request) string {
 	host, _, err := net.SplitHostPort(r.RemoteAddr)
 	if err != nil {
 		return r.RemoteAddr
 	}
 	return host
+}
+
+// isTrusted reports whether ip falls within any of the given networks.
+func isTrusted(ip net.IP, nets []*net.IPNet) bool {
+	for _, n := range nets {
+		if n.Contains(ip) {
+			return true
+		}
+	}
+	return false
 }

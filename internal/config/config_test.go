@@ -520,6 +520,36 @@ routes: []
 	}
 }
 
+func TestLoadConfig_TrustedProxies(t *testing.T) {
+	yamlContent := `
+server:
+  trusted_proxies:
+    - "10.0.0.0/8"
+    - "172.16.0.1"
+routes: []
+`
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "config.yaml")
+	if err := os.WriteFile(cfgPath, []byte(yamlContent), 0644); err != nil {
+		t.Fatalf("failed to write temp config: %v", err)
+	}
+
+	cfg, err := LoadConfig(cfgPath)
+	if err != nil {
+		t.Fatalf("LoadConfig returned error: %v", err)
+	}
+
+	if len(cfg.Server.TrustedProxies) != 2 {
+		t.Fatalf("TrustedProxies length = %d, want 2", len(cfg.Server.TrustedProxies))
+	}
+	if cfg.Server.TrustedProxies[0] != "10.0.0.0/8" {
+		t.Errorf("TrustedProxies[0] = %q, want %q", cfg.Server.TrustedProxies[0], "10.0.0.0/8")
+	}
+	if cfg.Server.TrustedProxies[1] != "172.16.0.1" {
+		t.Errorf("TrustedProxies[1] = %q, want %q", cfg.Server.TrustedProxies[1], "172.16.0.1")
+	}
+}
+
 func TestLoadConfig_MultipleEnvVarsInOneLine(t *testing.T) {
 	t.Setenv("HOST", "localhost")
 	t.Setenv("PORT", "3000")

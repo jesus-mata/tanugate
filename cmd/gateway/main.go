@@ -40,7 +40,11 @@ func main() {
 
 	handlers := make(map[string]http.Handler, len(cfg.Routes))
 	for i := range cfg.Routes {
-		handlers[cfg.Routes[i].Name] = proxy.NewProxyHandler(&cfg.Routes[i])
+		h := proxy.NewProxyHandler(&cfg.Routes[i])
+		if cfg.Routes[i].CORS != nil {
+			h = middleware.CORSOverride(*cfg.Routes[i].CORS)(h)
+		}
+		handlers[cfg.Routes[i].Name] = h
 	}
 
 	r := router.New(cfg.Routes, handlers)
@@ -55,6 +59,7 @@ func main() {
 		middleware.RequestID(),
 		middleware.Logging(logger),
 		metrics.Middleware(),
+		middleware.CORS(cfg.CORS),
 	)
 
 	mux := http.NewServeMux()

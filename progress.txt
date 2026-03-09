@@ -54,3 +54,24 @@
   - cmd/gateway/main.go (wired logging, metrics middleware, /health, /metrics endpoints)
   - go.mod, go.sum (prometheus dependency)
 - All validations pass: gofmt, go test ./..., go vet ./...
+
+## Phase 3: CORS — COMPLETE
+
+- Task: CORS preflight handling, response header injection, per-route override
+- Key decisions:
+  - No external deps; stdlib only
+  - corsResponseWriter intercepts WriteHeader to inject CORS headers at write time (after proxy copies upstream headers)
+  - Per-route override uses isOverride flag + internal marker header (X-Gateway-Cors-Override) to prevent global CORS from overwriting; marker deleted before response sent
+  - Complete replacement semantics: per-route CORS fully replaces global, no field-level merge
+  - Wildcard + credentials edge case: logs warning at construction, uses requesting origin instead of *
+  - Preflight = OPTIONS + Origin + Access-Control-Request-Method (all three required); plain OPTIONS forwarded to handler
+  - CORS positioned last in global chain (after Metrics, before Router)
+  - Preflights use global config only (router hasn't matched yet); per-route overrides apply to regular requests via per-route handler chain
+  - Added ExposedHeaders field to CORSConfig, CORS pointer to RouteConfig
+- Files created:
+  - internal/middleware/cors.go (CORS, CORSOverride, corsResponseWriter, helpers)
+  - internal/middleware/cors_test.go (16 tests)
+- Files modified:
+  - internal/config/config.go (added ExposedHeaders to CORSConfig, CORS *CORSConfig to RouteConfig)
+  - cmd/gateway/main.go (CORS in global chain, CORSOverride wired per-route)
+- All validations pass: gofmt, go test ./... -race, go vet ./...

@@ -38,6 +38,12 @@ func main() {
 	}))
 	slog.SetDefault(logger)
 
+	trustedProxies, err := ratelimit.ParseTrustedProxies(cfg.Server.TrustedProxies)
+	if err != nil {
+		slog.Error("failed to parse trusted proxies", "error", err)
+		os.Exit(1)
+	}
+
 	slog.Info("Starting API Gateway", "port", cfg.Server.Port)
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -94,7 +100,7 @@ func main() {
 		middleware.RequestID(),
 		middleware.Logging(logger),
 		metrics.Middleware(),
-		ratelimit.RateLimit(limiter, metrics),
+		ratelimit.RateLimit(limiter, metrics, trustedProxies),
 		auth.Middleware(authenticators),
 		middleware.CORS(cfg.CORS),
 	)

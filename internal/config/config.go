@@ -40,6 +40,7 @@ type CORSConfig struct {
 	AllowedOrigins   []string `yaml:"allowed_origins"`
 	AllowedMethods   []string `yaml:"allowed_methods"`
 	AllowedHeaders   []string `yaml:"allowed_headers"`
+	ExposedHeaders   []string `yaml:"exposed_headers"`
 	AllowCredentials bool     `yaml:"allow_credentials"`
 	MaxAge           int      `yaml:"max_age"`
 }
@@ -102,6 +103,7 @@ type RouteConfig struct {
 	Name           string                `yaml:"name"`
 	Match          MatchConfig           `yaml:"match"`
 	Upstream       UpstreamConfig        `yaml:"upstream"`
+	CORS           *CORSConfig           `yaml:"cors"`
 	Auth           *RouteAuthConfig      `yaml:"auth"`
 	RateLimit      *RouteLimitConfig     `yaml:"rate_limit"`
 	Retry          *RetryConfig          `yaml:"retry"`

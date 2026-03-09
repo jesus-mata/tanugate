@@ -18,7 +18,7 @@
     "number": 3,
     "plan": "plans/phase3-cors.md",
     "depends_on": [1],
-    "status": "open"
+    "status": "complete"
   },
   {
     "title": "Phase 4: Authentication",

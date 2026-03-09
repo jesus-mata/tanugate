@@ -32,7 +32,7 @@
     "number": 5,
     "plan": "plans/phase5-ratelimit.md",
     "depends_on": [1, 4],
-    "status": "open"
+    "status": "complete"
   },
   {
     "title": "Phase 6: Resilience (Circuit Breaker + Retry)",

@@ -103,3 +103,32 @@
   - internal/config/config.go (added ExposedHeaders to CORSConfig, CORS *CORSConfig to RouteConfig)
   - cmd/gateway/main.go (CORS in global chain, CORSOverride wired per-route)
 - All validations pass: gofmt, go test ./... -race, go vet ./...
+
+## Phase 5: Rate Limiting — COMPLETE
+
+- Task: Per-route rate limiting with in-memory token bucket and Redis sliding window backends
+- Key decisions:
+  - New external dep: github.com/redis/go-redis/v9@v9.18.0
+  - Limiter interface: Allow(ctx, key, limit, window) → (allowed, remaining, resetAt, err)
+  - Key extraction: ip (XFF→RemoteAddr), header:<name>, claim:<name> with IP fallback + slog.Warn
+  - Memory backend: token bucket with sync.Map + per-bucket mutex; background cleanup goroutine (60s interval, 5min eviction TTL); context-aware shutdown
+  - Redis backend: Lua sliding window script (ZSET); atomic check+add; key auto-expiry via EXPIRE
+  - Fail open on backend errors: Redis outage → log error, allow request
+  - Rate limit positioned before auth in global chain (prevents unauthenticated flood)
+  - Composite key: routeName + ":" + extractedKey
+  - 429 response: JSON body {error, message, retry_after} + Retry-After header
+  - X-RateLimit-{Limit,Remaining,Reset} headers set on every response for rate-limited routes
+  - gateway_rate_limit_rejected_total counter incremented on 429
+  - Redis health check wired into /health endpoint (shows degraded if Redis down)
+  - Redis client closed on graceful shutdown
+- Files created:
+  - internal/middleware/ratelimit/ratelimit.go (Limiter interface, RateLimit middleware, extractKey, extractIP)
+  - internal/middleware/ratelimit/ratelimit_test.go (13 tests: skip no config, allowed, rejected, headers always set, 429 format, key extraction ip/xff/header/header-missing/claim/claim-no-ctx, fail open, composite key)
+  - internal/middleware/ratelimit/memory.go (MemoryLimiter, token bucket, cleanup goroutine)
+  - internal/middleware/ratelimit/memory_test.go (9 tests: allow up to limit, reject after, token refill, full refill, different keys, concurrent access, cleanup evicts/preserves, context cancellation)
+  - internal/middleware/ratelimit/redis.go (RedisLimiter, Lua sliding window, HealthCheck, Close)
+  - internal/middleware/ratelimit/redis_test.go (6 tests: allow, reject, sliding window, atomicity, key expiry, ping — skipped without TEST_REDIS_ADDR)
+- Files modified:
+  - cmd/gateway/main.go (build limiter backend, wire RateLimit middleware into global chain, health checker, graceful shutdown)
+  - go.mod, go.sum (go-redis dependency)
+- All validations pass: gofmt, go test ./..., go vet ./..., go test -race

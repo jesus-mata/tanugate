@@ -11,7 +11,6 @@ import (
 	"time"
 
 	"github.com/NextSolutionCUU/api-gateway/internal/config"
-	"github.com/NextSolutionCUU/api-gateway/internal/middleware/auth"
 	"github.com/NextSolutionCUU/api-gateway/internal/observability"
 	"github.com/NextSolutionCUU/api-gateway/internal/router"
 	"github.com/prometheus/client_golang/prometheus"
@@ -307,34 +306,6 @@ func TestKeyExtract_Header_Missing(t *testing.T) {
 	req.RemoteAddr = "1.2.3.4:1234"
 
 	key := extractKey(req, "header:X-Tenant-ID", nil)
-	if key != "1.2.3.4" {
-		t.Fatalf("expected IP fallback 1.2.3.4, got %s", key)
-	}
-}
-
-func TestKeyExtract_Claim(t *testing.T) {
-	req := httptest.NewRequest(http.MethodGet, "/", nil)
-	req.RemoteAddr = "1.2.3.4:1234"
-	ctx := auth.WithAuthResult(req.Context(), &auth.AuthResult{
-		Subject: "user-123",
-		Claims: map[string]any{
-			"sub":       "user-123",
-			"tenant_id": "org-456",
-		},
-	})
-	req = req.WithContext(ctx)
-
-	key := extractKey(req, "claim:tenant_id", nil)
-	if key != "org-456" {
-		t.Fatalf("expected org-456, got %s", key)
-	}
-}
-
-func TestKeyExtract_Claim_NoAuthContext(t *testing.T) {
-	req := httptest.NewRequest(http.MethodGet, "/", nil)
-	req.RemoteAddr = "1.2.3.4:1234"
-
-	key := extractKey(req, "claim:tenant_id", nil)
 	if key != "1.2.3.4" {
 		t.Fatalf("expected IP fallback 1.2.3.4, got %s", key)
 	}

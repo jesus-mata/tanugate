@@ -11,7 +11,6 @@ import (
 	"time"
 
 	"github.com/NextSolutionCUU/api-gateway/internal/middleware"
-	"github.com/NextSolutionCUU/api-gateway/internal/middleware/auth"
 	"github.com/NextSolutionCUU/api-gateway/internal/observability"
 	"github.com/NextSolutionCUU/api-gateway/internal/router"
 )
@@ -93,11 +92,13 @@ func RateLimit(limiter Limiter, metrics *observability.MetricsCollector, trusted
 				w.Header().Set("Retry-After", fmt.Sprintf("%d", retryAfter))
 				w.Header().Set("Content-Type", "application/json")
 				w.WriteHeader(http.StatusTooManyRequests)
-				json.NewEncoder(w).Encode(map[string]any{
+				if err := json.NewEncoder(w).Encode(map[string]any{
 					"error":       "rate_limit_exceeded",
 					"message":     fmt.Sprintf("Rate limit exceeded. Try again in %d seconds.", retryAfter),
 					"retry_after": retryAfter,
-				})
+				}); err != nil {
+					slog.Debug("failed to encode 429 response body", "error", err)
+				}
 				if metrics != nil {
 					metrics.RateLimitRejected.WithLabelValues(mr.Config.Name).Inc()
 				}
@@ -110,7 +111,7 @@ func RateLimit(limiter Limiter, metrics *observability.MetricsCollector, trusted
 }
 
 // extractKey resolves a rate-limit key from the request based on keySource.
-// Supported formats: "ip", "header:<name>", "claim:<name>".
+// Supported formats: "ip", "header:<name>".
 func extractKey(r *http.Request, keySource string, trustedProxies []*net.IPNet) string {
 	switch {
 	case keySource == "" || keySource == "ip":
@@ -126,24 +127,6 @@ func extractKey(r *http.Request, keySource string, trustedProxies []*net.IPNet) 
 			return extractIP(r, trustedProxies)
 		}
 		return val
-
-	case strings.HasPrefix(keySource, "claim:"):
-		claimName := strings.TrimPrefix(keySource, "claim:")
-		ar := auth.ResultFromContext(r.Context())
-		if ar == nil || ar.Claims == nil {
-			slog.Warn("rate limit claim key unavailable (no auth context), falling back to IP",
-				"claim", claimName,
-			)
-			return extractIP(r, trustedProxies)
-		}
-		val, ok := ar.Claims[claimName]
-		if !ok {
-			slog.Warn("rate limit claim key not found, falling back to IP",
-				"claim", claimName,
-			)
-			return extractIP(r, trustedProxies)
-		}
-		return fmt.Sprintf("%v", val)
 
 	default:
 		return extractIP(r, trustedProxies)

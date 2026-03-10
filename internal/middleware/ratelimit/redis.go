@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/NextSolutionCUU/api-gateway/internal/config"
+	"github.com/google/uuid"
 	"github.com/redis/go-redis/v9"
 )
 
@@ -21,7 +22,7 @@ redis.call('ZREMRANGEBYSCORE', key, 0, now - window)
 local count = redis.call('ZCARD', key)
 
 if count < limit then
-    redis.call('ZADD', key, now, now .. '-' .. math.random(1000000))
+    redis.call('ZADD', key, now, ARGV[4])
     redis.call('EXPIRE', key, math.ceil(window / 1000))
     return {1, limit - count - 1, now + window}
 else
@@ -55,7 +56,8 @@ func (rl *RedisLimiter) Allow(ctx context.Context, key string, limit int, window
 	nowMs := time.Now().UnixMilli()
 	windowMs := window.Milliseconds()
 
-	result, err := slidingWindowScript.Run(ctx, rl.client, []string{key}, windowMs, limit, nowMs).Int64Slice()
+	member := uuid.New().String()
+	result, err := slidingWindowScript.Run(ctx, rl.client, []string{key}, windowMs, limit, nowMs, member).Int64Slice()
 	if err != nil {
 		return false, 0, time.Time{}, err
 	}

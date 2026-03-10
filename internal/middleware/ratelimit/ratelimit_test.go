@@ -362,7 +362,7 @@ func TestRateLimit_CompositeKey(t *testing.T) {
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
 
-	expected := "users-api:10.0.0.5"
+	expected := "rl:users-api:10.0.0.5"
 	if ml.lastKey != expected {
 		t.Fatalf("expected composite key %q, got %q", expected, ml.lastKey)
 	}

@@ -63,7 +63,7 @@ func RateLimit(limiter Limiter, metrics *observability.MetricsCollector, trusted
 
 			rl := mr.Config.RateLimit
 			extracted := extractKey(r, rl.KeySource, trustedProxies)
-			compositeKey := mr.Config.Name + ":" + extracted
+			compositeKey := "rl:" + mr.Config.Name + ":" + extracted
 
 			allowed, remaining, resetAt, err := limiter.Allow(
 				r.Context(),
@@ -88,7 +88,7 @@ func RateLimit(limiter Limiter, metrics *observability.MetricsCollector, trusted
 			w.Header().Set("X-RateLimit-Reset", fmt.Sprintf("%d", resetUnix))
 
 			if !allowed {
-				retryAfter := max(int(time.Until(resetAt).Seconds()), 1)
+				retryAfter := max(int(resetAt.Unix()-time.Now().Unix()), 1)
 				w.Header().Set("Retry-After", fmt.Sprintf("%d", retryAfter))
 				w.Header().Set("Content-Type", "application/json")
 				w.WriteHeader(http.StatusTooManyRequests)
@@ -142,19 +142,21 @@ func extractKey(r *http.Request, keySource string, trustedProxies []*net.IPNet) 
 // the first untrusted IP is returned. If every entry is trusted, RemoteAddr is
 // used as a fallback.
 func extractIP(r *http.Request, trustedProxies []*net.IPNet) string {
+	addr := remoteAddrIP(r)
+
 	if len(trustedProxies) == 0 {
-		return remoteAddrIP(r)
+		return addr
 	}
 
 	// Only consult XFF if the immediate connection is from a trusted proxy.
-	remoteIP := net.ParseIP(remoteAddrIP(r))
+	remoteIP := net.ParseIP(addr)
 	if remoteIP == nil || !isTrusted(remoteIP, trustedProxies) {
-		return remoteAddrIP(r)
+		return addr
 	}
 
 	xff := r.Header.Get("X-Forwarded-For")
 	if xff == "" {
-		return remoteAddrIP(r)
+		return addr
 	}
 
 	parts := strings.Split(xff, ",")
@@ -172,7 +174,7 @@ func extractIP(r *http.Request, trustedProxies []*net.IPNet) string {
 		}
 	}
 
-	return remoteAddrIP(r)
+	return addr
 }
 
 // remoteAddrIP extracts the IP portion from r.RemoteAddr (host:port).

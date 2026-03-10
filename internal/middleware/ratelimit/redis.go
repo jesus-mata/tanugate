@@ -23,7 +23,7 @@ local count = redis.call('ZCARD', key)
 
 if count < limit then
     redis.call('ZADD', key, now, ARGV[4])
-    redis.call('EXPIRE', key, math.ceil(window / 1000))
+    redis.call('PEXPIRE', key, window)
     return {1, limit - count - 1, now + window}
 else
     local oldest = redis.call('ZRANGE', key, 0, 0, 'WITHSCORES')

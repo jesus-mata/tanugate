@@ -13,6 +13,7 @@ import (
 	"github.com/NextSolutionCUU/api-gateway/internal/config"
 	"github.com/NextSolutionCUU/api-gateway/internal/middleware"
 	"github.com/NextSolutionCUU/api-gateway/internal/middleware/auth"
+	"github.com/NextSolutionCUU/api-gateway/internal/middleware/ratelimit"
 	"github.com/NextSolutionCUU/api-gateway/internal/observability"
 	"github.com/NextSolutionCUU/api-gateway/internal/proxy"
 	"github.com/NextSolutionCUU/api-gateway/internal/router"
@@ -37,7 +38,34 @@ func main() {
 	}))
 	slog.SetDefault(logger)
 
+	trustedProxies, err := ratelimit.ParseTrustedProxies(cfg.Server.TrustedProxies)
+	if err != nil {
+		slog.Error("failed to parse trusted proxies", "error", err)
+		os.Exit(1)
+	}
+
 	slog.Info("Starting API Gateway", "port", cfg.Server.Port)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	// Build rate limiter backend.
+	var limiter ratelimit.Limiter
+	var healthChecker observability.HealthChecker
+	switch cfg.RateLimit.Backend {
+	case "redis":
+		if cfg.RateLimit.Redis == nil {
+			slog.Error("redis rate limit backend requires redis config")
+			os.Exit(1)
+		}
+		rl := ratelimit.NewRedisLimiter(cfg.RateLimit.Redis)
+		limiter = rl
+		healthChecker = rl
+		slog.Info("Rate limit backend: redis", "addr", cfg.RateLimit.Redis.Addr)
+	default:
+		limiter = ratelimit.NewMemoryLimiter(ctx)
+		slog.Info("Rate limit backend: memory")
+	}
 
 	// Build auth providers.
 	authenticators := make(map[string]auth.Authenticator, len(cfg.AuthProviders))
@@ -72,12 +100,13 @@ func main() {
 		middleware.RequestID(),
 		middleware.Logging(logger),
 		metrics.Middleware(),
+		ratelimit.RateLimit(limiter, metrics, trustedProxies),
 		auth.Middleware(authenticators),
 		middleware.CORS(cfg.CORS),
 	)
 
 	mux := http.NewServeMux()
-	mux.HandleFunc("GET /health", observability.HealthHandler(cfg, nil))
+	mux.HandleFunc("GET /health", observability.HealthHandler(cfg, healthChecker))
 	mux.Handle("GET /metrics", promhttp.HandlerFor(registry, promhttp.HandlerOpts{}))
 	mux.Handle("/", globalChain(r))
 
@@ -102,12 +131,20 @@ func main() {
 	<-quit
 	slog.Info("Shutting down server...")
 
-	ctx, cancel := context.WithTimeout(context.Background(), cfg.Server.ShutdownTimeout)
-	defer cancel()
+	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), cfg.Server.ShutdownTimeout)
+	defer shutdownCancel()
+	cancel() // Stop background goroutines (memory limiter cleanup).
 
-	if err := srv.Shutdown(ctx); err != nil {
+	if err := srv.Shutdown(shutdownCtx); err != nil {
 		slog.Error("server forced to shutdown", "error", err)
 		os.Exit(1)
+	}
+
+	// Close Redis client if applicable.
+	if rl, ok := limiter.(*ratelimit.RedisLimiter); ok {
+		if err := rl.Close(); err != nil {
+			slog.Error("failed to close redis client", "error", err)
+		}
 	}
 
 	slog.Info("Server stopped")

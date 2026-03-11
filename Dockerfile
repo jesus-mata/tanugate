@@ -7,8 +7,7 @@ COPY . .
 RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags="-s -w" -o /gateway ./cmd/gateway
 
 FROM alpine:3.21
-RUN apk add --no-cache ca-certificates tzdata
-RUN adduser -D -u 1000 gateway
+RUN apk add --no-cache ca-certificates tzdata && adduser -D -u 1000 gateway
 COPY --from=builder /gateway /usr/local/bin/gateway
 COPY config/gateway.yaml /etc/gateway/gateway.yaml
 USER gateway

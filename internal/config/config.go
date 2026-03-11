@@ -154,8 +154,9 @@ type CircuitBreakerConfig struct {
 
 // TransformConfig holds request/response transformation rules for a route.
 type TransformConfig struct {
-	Request  *DirectionTransform `yaml:"request"`
-	Response *DirectionTransform `yaml:"response"`
+	Request     *DirectionTransform `yaml:"request"`
+	Response    *DirectionTransform `yaml:"response"`
+	MaxBodySize int64               `yaml:"max_body_size"`
 }
 
 // DirectionTransform describes header and body transformations applied in one

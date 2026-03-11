@@ -21,6 +21,24 @@ type startTimeKey struct{}
 
 var varPattern = regexp.MustCompile(`\$\{([^}]+)\}`)
 
+const defaultMaxTransformBodySize = 10 << 20 // 10 MB
+
+func effectiveMaxBody(configured int64) int64 {
+	if configured > 0 {
+		return configured
+	}
+	return defaultMaxTransformBodySize
+}
+
+func writeJSON(w http.ResponseWriter, status int, errCode, message string) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	json.NewEncoder(w).Encode(map[string]string{
+		"error":   errCode,
+		"message": message,
+	})
+}
+
 // resolveVariables replaces ${...} placeholders in s with their resolved values.
 func resolveVariables(s string, r *http.Request, latencyMs *int64) string {
 	return varPattern.ReplaceAllStringFunc(s, func(match string) string {
@@ -133,7 +151,7 @@ func transformBody(body []byte, cfg *config.BodyTransform, r *http.Request, late
 
 // RequestTransform returns a middleware that transforms request headers and body
 // based on cfg. It always stores the start time in context for latency calculation.
-func RequestTransform(cfg *config.DirectionTransform) middleware.Middleware {
+func RequestTransform(cfg *config.DirectionTransform, maxBodySize int64) middleware.Middleware {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			ctx := context.WithValue(r.Context(), startTimeKey{}, time.Now())
@@ -147,11 +165,21 @@ func RequestTransform(cfg *config.DirectionTransform) middleware.Middleware {
 			transformHeaders(r.Header, cfg.Headers, r, nil)
 
 			if cfg.Body != nil && isJSON(r.Header.Get("Content-Type")) {
-				body, err := io.ReadAll(r.Body)
+				limit := effectiveMaxBody(maxBodySize)
+				body, err := io.ReadAll(io.LimitReader(r.Body, limit+1))
 				r.Body.Close()
-				if err == nil && len(body) > 0 {
-					transformed, err := transformBody(body, cfg.Body, r, nil)
-					if err == nil {
+				if err != nil {
+					writeJSON(w, http.StatusBadGateway, "bad_gateway", "failed to read request body")
+					return
+				}
+				if int64(len(body)) > limit {
+					writeJSON(w, http.StatusRequestEntityTooLarge, "request_too_large",
+						"request body exceeds transform size limit")
+					return
+				}
+				if len(body) > 0 {
+					transformed, terr := transformBody(body, cfg.Body, r, nil)
+					if terr == nil {
 						r.Body = io.NopCloser(bytes.NewReader(transformed))
 						r.ContentLength = int64(len(transformed))
 						r.Header.Set("Content-Length", strconv.Itoa(len(transformed)))
@@ -170,7 +198,7 @@ func RequestTransform(cfg *config.DirectionTransform) middleware.Middleware {
 
 // ResponseTransform returns a middleware that buffers the upstream response
 // and applies header/body transforms before flushing to the client.
-func ResponseTransform(cfg *config.DirectionTransform) middleware.Middleware {
+func ResponseTransform(cfg *config.DirectionTransform, maxBodySize int64) middleware.Middleware {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			if cfg == nil {
@@ -178,12 +206,20 @@ func ResponseTransform(cfg *config.DirectionTransform) middleware.Middleware {
 				return
 			}
 
+			limit := effectiveMaxBody(maxBodySize)
 			buf := &bufferingResponseWriter{
 				headers:    make(http.Header),
 				statusCode: http.StatusOK,
+				maxBody:    limit,
 			}
 
 			next.ServeHTTP(buf, r)
+
+			if buf.exceeded {
+				writeJSON(w, http.StatusBadGateway, "bad_gateway",
+					"upstream response body exceeds transform size limit")
+				return
+			}
 
 			// Compute latency.
 			var latencyMs int64
@@ -230,6 +266,8 @@ type bufferingResponseWriter struct {
 	body        bytes.Buffer
 	statusCode  int
 	wroteHeader bool
+	maxBody     int64
+	exceeded    bool
 }
 
 func (w *bufferingResponseWriter) Header() http.Header {
@@ -247,6 +285,10 @@ func (w *bufferingResponseWriter) WriteHeader(code int) {
 func (w *bufferingResponseWriter) Write(b []byte) (int, error) {
 	if !w.wroteHeader {
 		w.wroteHeader = true
+	}
+	if w.maxBody > 0 && int64(w.body.Len())+int64(len(b)) > w.maxBody {
+		w.exceeded = true
+		return 0, nil
 	}
 	return w.body.Write(b)
 }

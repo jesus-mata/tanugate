@@ -415,7 +415,7 @@ func TestBufferingResponseWriter(t *testing.T) {
 
 func TestRequestTransformMiddleware(t *testing.T) {
 	t.Run("nil config passthrough", func(t *testing.T) {
-		handler := RequestTransform(nil)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		handler := RequestTransform(nil, 0)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			if _, ok := r.Context().Value(startTimeKey{}).(time.Time); !ok {
 				t.Error("start time should be set even with nil config")
 			}
@@ -435,7 +435,7 @@ func TestRequestTransformMiddleware(t *testing.T) {
 				Remove: []string{"X-Remove"},
 			},
 		}
-		handler := RequestTransform(cfg)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		handler := RequestTransform(cfg, 0)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			if r.Header.Get("X-Added") != "val" {
 				t.Error("X-Added header not set")
 			}
@@ -455,7 +455,7 @@ func TestRequestTransformMiddleware(t *testing.T) {
 				InjectFields: map[string]any{"added": "val"},
 			},
 		}
-		handler := RequestTransform(cfg)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		handler := RequestTransform(cfg, 0)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			body, _ := io.ReadAll(r.Body)
 			var data map[string]any
 			json.Unmarshal(body, &data)
@@ -483,7 +483,7 @@ func TestRequestTransformMiddleware(t *testing.T) {
 			},
 		}
 		original := "plain text"
-		handler := RequestTransform(cfg)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		handler := RequestTransform(cfg, 0)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			body, _ := io.ReadAll(r.Body)
 			if string(body) != original {
 				t.Errorf("body = %q, want %q", string(body), original)
@@ -496,7 +496,7 @@ func TestRequestTransformMiddleware(t *testing.T) {
 
 	t.Run("start time stored in context", func(t *testing.T) {
 		before := time.Now()
-		handler := RequestTransform(nil)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		handler := RequestTransform(nil, 0)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			start, ok := StartTimeFromContext(r.Context())
 			if !ok {
 				t.Fatal("start time not found in context")
@@ -518,7 +518,7 @@ func TestResponseTransformMiddleware(t *testing.T) {
 			w.WriteHeader(http.StatusCreated)
 			w.Write([]byte("body"))
 		})
-		handler := ResponseTransform(nil)(upstream)
+		handler := ResponseTransform(nil, 0)(upstream)
 		rec := httptest.NewRecorder()
 		handler.ServeHTTP(rec, httptest.NewRequest("GET", "/", nil))
 		if rec.Code != http.StatusCreated {
@@ -541,7 +541,7 @@ func TestResponseTransformMiddleware(t *testing.T) {
 			w.Header().Set("X-Keep", "stay")
 			w.Write([]byte("ok"))
 		})
-		handler := ResponseTransform(cfg)(upstream)
+		handler := ResponseTransform(cfg, 0)(upstream)
 		rec := httptest.NewRecorder()
 		handler.ServeHTTP(rec, httptest.NewRequest("GET", "/", nil))
 		if rec.Header().Get("X-Added") != "val" {
@@ -566,7 +566,7 @@ func TestResponseTransformMiddleware(t *testing.T) {
 			w.Header().Set("Content-Type", "application/json")
 			w.Write([]byte(`{"secret":"s3cret","keep":"val"}`))
 		})
-		handler := ResponseTransform(cfg)(upstream)
+		handler := ResponseTransform(cfg, 0)(upstream)
 		rec := httptest.NewRecorder()
 		handler.ServeHTTP(rec, httptest.NewRequest("GET", "/", nil))
 		var data map[string]any
@@ -593,7 +593,7 @@ func TestResponseTransformMiddleware(t *testing.T) {
 			w.WriteHeader(http.StatusNotFound)
 			w.Write([]byte("not found"))
 		})
-		handler := ResponseTransform(cfg)(upstream)
+		handler := ResponseTransform(cfg, 0)(upstream)
 		rec := httptest.NewRecorder()
 		handler.ServeHTTP(rec, httptest.NewRequest("GET", "/", nil))
 		if rec.Code != http.StatusNotFound {
@@ -612,7 +612,7 @@ func TestResponseTransformMiddleware(t *testing.T) {
 			w.Write([]byte("ok"))
 		})
 		// Wrap with RequestTransform(nil) to set start time in context.
-		handler := RequestTransform(nil)(ResponseTransform(cfg)(upstream))
+		handler := RequestTransform(nil, 0)(ResponseTransform(cfg, 0)(upstream))
 		rec := httptest.NewRecorder()
 		handler.ServeHTTP(rec, httptest.NewRequest("GET", "/", nil))
 		latency := rec.Header().Get("X-Latency")
@@ -636,7 +636,7 @@ func TestResponseTransformMiddleware(t *testing.T) {
 			w.Header().Set("Content-Type", "text/plain")
 			w.Write([]byte(original))
 		})
-		handler := ResponseTransform(cfg)(upstream)
+		handler := ResponseTransform(cfg, 0)(upstream)
 		rec := httptest.NewRecorder()
 		handler.ServeHTTP(rec, httptest.NewRequest("GET", "/", nil))
 		if rec.Body.String() != original {
@@ -701,7 +701,7 @@ func TestIntegration_RequestAndResponseTransform(t *testing.T) {
 		})
 	})
 
-	handler := RequestTransform(reqCfg)(ResponseTransform(resCfg)(echoHandler))
+	handler := RequestTransform(reqCfg, 0)(ResponseTransform(resCfg, 0)(echoHandler))
 
 	reqBody := `{"username":"user","password":"pass","keep":"yes"}`
 	req := httptest.NewRequest("POST", "/api/test", strings.NewReader(reqBody))
@@ -737,5 +737,161 @@ func TestIntegration_RequestAndResponseTransform(t *testing.T) {
 	}
 	if _, ok := resData["gateway_latency"]; !ok {
 		t.Error("gateway_latency should be injected")
+	}
+}
+
+// --- Body size limit tests ---
+
+func TestEffectiveMaxBody(t *testing.T) {
+	if got := effectiveMaxBody(0); got != defaultMaxTransformBodySize {
+		t.Errorf("effectiveMaxBody(0) = %d, want %d", got, defaultMaxTransformBodySize)
+	}
+	if got := effectiveMaxBody(1024); got != 1024 {
+		t.Errorf("effectiveMaxBody(1024) = %d, want 1024", got)
+	}
+	if got := effectiveMaxBody(-1); got != defaultMaxTransformBodySize {
+		t.Errorf("effectiveMaxBody(-1) = %d, want %d", got, defaultMaxTransformBodySize)
+	}
+}
+
+func TestRequestTransform_BodySizeLimit(t *testing.T) {
+	cfg := &config.DirectionTransform{
+		Body: &config.BodyTransform{
+			InjectFields: map[string]any{"added": "val"},
+		},
+	}
+	const limit int64 = 64
+	bigBody := `{"data":"` + strings.Repeat("x", int(limit)) + `"}`
+	req := httptest.NewRequest("POST", "/", strings.NewReader(bigBody))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+
+	handler := RequestTransform(cfg, limit)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Fatal("handler should not be called for oversized body")
+	}))
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusRequestEntityTooLarge {
+		t.Errorf("status = %d, want %d", rec.Code, http.StatusRequestEntityTooLarge)
+	}
+	var resp map[string]string
+	json.Unmarshal(rec.Body.Bytes(), &resp)
+	if resp["error"] != "request_too_large" {
+		t.Errorf("error = %q, want %q", resp["error"], "request_too_large")
+	}
+}
+
+func TestRequestTransform_BodyWithinLimit(t *testing.T) {
+	cfg := &config.DirectionTransform{
+		Body: &config.BodyTransform{
+			InjectFields: map[string]any{"added": "val"},
+		},
+	}
+	const limit int64 = 1024
+	smallBody := `{"key":"value"}`
+	req := httptest.NewRequest("POST", "/", strings.NewReader(smallBody))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+
+	var called bool
+	handler := RequestTransform(cfg, limit)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		called = true
+		body, _ := io.ReadAll(r.Body)
+		var data map[string]any
+		json.Unmarshal(body, &data)
+		if data["added"] != "val" {
+			t.Error("injected field should be present")
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	handler.ServeHTTP(rec, req)
+
+	if !called {
+		t.Error("next handler should have been called")
+	}
+	if rec.Code != http.StatusOK {
+		t.Errorf("status = %d, want %d", rec.Code, http.StatusOK)
+	}
+}
+
+func TestResponseTransform_BodySizeLimit(t *testing.T) {
+	cfg := &config.DirectionTransform{
+		Body: &config.BodyTransform{
+			InjectFields: map[string]any{"added": "val"},
+		},
+	}
+	const limit int64 = 64
+	bigBody := `{"data":"` + strings.Repeat("x", int(limit)) + `"}`
+
+	upstream := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(bigBody))
+	})
+	handler := ResponseTransform(cfg, limit)(upstream)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, httptest.NewRequest("GET", "/", nil))
+
+	if rec.Code != http.StatusBadGateway {
+		t.Errorf("status = %d, want %d", rec.Code, http.StatusBadGateway)
+	}
+	var resp map[string]string
+	json.Unmarshal(rec.Body.Bytes(), &resp)
+	if resp["error"] != "bad_gateway" {
+		t.Errorf("error = %q, want %q", resp["error"], "bad_gateway")
+	}
+}
+
+func TestResponseTransform_BodyWithinLimit(t *testing.T) {
+	cfg := &config.DirectionTransform{
+		Body: &config.BodyTransform{
+			InjectFields: map[string]any{"added": "val"},
+		},
+	}
+	const limit int64 = 1024
+	smallBody := `{"key":"value"}`
+
+	upstream := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(smallBody))
+	})
+	handler := ResponseTransform(cfg, limit)(upstream)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, httptest.NewRequest("GET", "/", nil))
+
+	if rec.Code != http.StatusOK {
+		t.Errorf("status = %d, want %d", rec.Code, http.StatusOK)
+	}
+	var data map[string]any
+	json.Unmarshal(rec.Body.Bytes(), &data)
+	if data["added"] != "val" {
+		t.Error("injected field should be present")
+	}
+}
+
+func TestBufferingResponseWriter_ExceedsLimit(t *testing.T) {
+	buf := &bufferingResponseWriter{
+		headers:    make(http.Header),
+		statusCode: http.StatusOK,
+		maxBody:    10,
+	}
+	// First write within limit.
+	n, err := buf.Write([]byte("hello"))
+	if n != 5 || err != nil {
+		t.Fatalf("first Write = (%d, %v), want (5, nil)", n, err)
+	}
+	if buf.exceeded {
+		t.Error("should not be exceeded after first write")
+	}
+	// Second write exceeds limit.
+	n, err = buf.Write([]byte("world!"))
+	if n != 0 || err != nil {
+		t.Fatalf("second Write = (%d, %v), want (0, nil)", n, err)
+	}
+	if !buf.exceeded {
+		t.Error("should be exceeded after second write")
+	}
+	// Body should only contain the first write.
+	if buf.body.String() != "hello" {
+		t.Errorf("body = %q, want %q", buf.body.String(), "hello")
 	}
 }

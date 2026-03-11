@@ -103,3 +103,30 @@
   - internal/config/config.go (added ExposedHeaders to CORSConfig, CORS *CORSConfig to RouteConfig)
   - cmd/gateway/main.go (CORS in global chain, CORSOverride wired per-route)
 - All validations pass: gofmt, go test ./... -race, go vet ./...
+
+## Phase 6: Resilience (Circuit Breaker + Retry) — COMPLETE
+
+- Task: Circuit breaker state machine + retry with exponential backoff + jitter
+- Key decisions:
+  - No external deps; stdlib only
+  - CB state machine: Closed→Open (failure threshold), Open→HalfOpen (timeout elapsed), HalfOpen→Closed (success threshold), HalfOpen→Open (any failure)
+  - fn() executes outside the lock to avoid holding mutex during slow upstream calls
+  - Execute method: lock→check state→unlock→run fn→lock→record result
+  - WithClock option for deterministic testing of timeout transitions
+  - OnStateChange callback updates Prometheus gauge (wired in main.go)
+  - Retry: body buffered in memory, replayed via bytes.NewReader per attempt
+  - Backoff: initialDelay * multiplier^(attempt-1) * jitter where jitter ∈ [0.5, 1.5)
+  - Context cancellation checked before sleep and before each attempt
+  - httptest.NewRecorder captures response for retry evaluation
+  - CB+Retry combo: retry loop wraps each attempt in cb.Execute; ErrCircuitOpen breaks immediately → 503
+  - WithCircuitBreaker: CB-only wrapper (no retry), treats status >= 500 as failure
+  - Retry without CB: cb=nil handled gracefully
+  - Moved metrics/registry creation before handler loop in main.go so CB callback can reference metrics
+- Files created:
+  - internal/middleware/circuitbreaker/circuitbreaker.go (State, Execute, options)
+  - internal/middleware/circuitbreaker/circuitbreaker_test.go (11 tests incl. concurrency)
+  - internal/middleware/retry/retry.go (Retry, WithCircuitBreaker, sleep/jitter options)
+  - internal/middleware/retry/retry_test.go (17 tests incl. 2 integration)
+- Files modified:
+  - cmd/gateway/main.go (import CB+retry, wire per-route, moved metrics init earlier)
+- All validations pass: gofmt, go test ./... -race, go vet ./...

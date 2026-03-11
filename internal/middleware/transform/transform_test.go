@@ -83,6 +83,15 @@ func TestResolveVariables_ClientIP_RemoteAddr(t *testing.T) {
 	}
 }
 
+func TestResolveVariables_ClientIP_IPv6(t *testing.T) {
+	r := httptest.NewRequest("GET", "/", nil)
+	r.RemoteAddr = "[::1]:8080"
+	result := resolveVariables("${client_ip}", r, nil)
+	if result != "::1" {
+		t.Errorf("got %q, want %q", result, "::1")
+	}
+}
+
 // --- transformHeaders tests ---
 
 func TestTransformHeaders(t *testing.T) {
@@ -408,6 +417,12 @@ func TestBufferingResponseWriter(t *testing.T) {
 		if buf.statusCode != http.StatusCreated {
 			t.Errorf("status = %d, want %d", buf.statusCode, http.StatusCreated)
 		}
+	})
+
+	t.Run("implements http.Flusher", func(t *testing.T) {
+		buf := &bufferingResponseWriter{headers: make(http.Header), statusCode: http.StatusOK}
+		var flusher http.Flusher = buf // compile-time check
+		flusher.Flush()                // should not panic
 	})
 }
 

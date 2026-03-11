@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"io"
 	"log/slog"
+	"net"
 	"net/http"
 	"regexp"
 	"strconv"
@@ -80,11 +81,11 @@ func clientIP(r *http.Request) string {
 		}
 		return strings.TrimSpace(xff)
 	}
-	addr := r.RemoteAddr
-	if idx := strings.LastIndex(addr, ":"); idx != -1 {
-		return addr[:idx]
+	host, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err != nil {
+		return r.RemoteAddr
 	}
-	return addr
+	return host
 }
 
 // isJSON checks if the Content-Type header indicates JSON.
@@ -292,3 +293,9 @@ func (w *bufferingResponseWriter) Write(b []byte) (int, error) {
 	}
 	return w.body.Write(b)
 }
+
+// Flush implements http.Flusher. It is a no-op because the entire response
+// is buffered until transforms are applied.
+func (w *bufferingResponseWriter) Flush() {}
+
+var _ http.Flusher = (*bufferingResponseWriter)(nil)

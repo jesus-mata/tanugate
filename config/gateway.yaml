@@ -5,30 +5,24 @@ server:
   write_timeout: 30s
   idle_timeout: 120s
   shutdown_timeout: 15s
-  # trusted_proxies:
-  #   - "10.0.0.0/8"
-  #   - "172.16.0.0/12"
-  #   - "192.168.0.0/16"
 
 logging:
   level: "info"
 
 cors:
-  allowed_origins:
-    - "*"
-  allowed_methods:
-    - "GET"
-    - "POST"
-    - "PUT"
-    - "DELETE"
-  allowed_headers:
-    - "Content-Type"
-    - "Authorization"
-  allow_credentials: false
+  allowed_origins: ["${CORS_ALLOWED_ORIGIN}"]
+  allowed_methods: ["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"]
+  allowed_headers: ["Authorization", "Content-Type", "X-API-Key", "X-Request-ID"]
+  exposed_headers: ["X-Request-ID", "X-RateLimit-Remaining", "X-RateLimit-Reset"]
+  allow_credentials: true
   max_age: 3600
 
 rate_limit:
-  backend: "memory"
+  backend: "${RATE_LIMIT_BACKEND}"
+  redis:
+    addr: "${REDIS_ADDR}"
+    password: "${REDIS_PASSWORD}"
+    db: 0
 
 auth_providers:
   jwt_default:
@@ -36,23 +30,7 @@ auth_providers:
     jwt:
       secret: "${JWT_SECRET}"
       algorithm: "HS256"
-      issuer: "api-gateway"
+      issuer: "${JWT_ISSUER}"
+      audience: "${JWT_AUDIENCE}"
 
-routes:
-  - name: "user-service"
-    match:
-      path_regex: "^/api/users(?P<path>/.*)?$"
-      methods: ["GET", "POST", "PUT", "DELETE"]
-    upstream:
-      url: "http://localhost:3001"
-      path_rewrite: "/internal/users${path}"
-      timeout: 30s
-
-  - name: "order-service"
-    match:
-      path_regex: "^/api/orders(?P<path>/.*)?$"
-      methods: ["GET", "POST"]
-    upstream:
-      url: "http://localhost:3002"
-      path_rewrite: "/internal/orders${path}"
-      timeout: 30s
+routes: []

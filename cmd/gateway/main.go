@@ -119,6 +119,12 @@ func main() {
 		if cfg.Routes[i].CORS != nil {
 			h = middleware.CORSOverride(*cfg.Routes[i].CORS)(h)
 		}
+
+		// Auth and rate-limit are per-route: the router sets route context
+		// before dispatching, so these middleware can read the matched route.
+		h = auth.Middleware(authenticators)(h)
+		h = ratelimit.RateLimit(limiter, metrics, trustedProxies)(h)
+
 		handlers[cfg.Routes[i].Name] = h
 	}
 
@@ -129,8 +135,6 @@ func main() {
 		middleware.RequestID(),
 		middleware.Logging(logger),
 		metrics.Middleware(),
-		ratelimit.RateLimit(limiter, metrics, trustedProxies),
-		auth.Middleware(authenticators),
 		middleware.CORS(cfg.CORS),
 	)
 

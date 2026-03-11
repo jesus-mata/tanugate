@@ -65,9 +65,9 @@ func WithClock(fn func() time.Time) Option {
 type CircuitBreaker struct {
 	mu sync.Mutex
 
-	state          State
-	failureCount   int
-	successCount   int
+	state           State
+	failureCount    int
+	successCount    int
 	halfOpenProbing bool // true while a probe request is in-flight during HalfOpen
 
 	failureThreshold int

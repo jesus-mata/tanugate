@@ -157,3 +157,24 @@
 - Files modified:
   - cmd/gateway/main.go (import CB+retry, per-route wiring, moved registry init before handler loop)
 - All validations pass: gofmt, go test ./..., go vet ./...
+
+## Phase 7: Request/Response Transformation — COMPLETE
+
+- Task: Request/response transformation middleware with header/body transforms and dynamic variable interpolation
+- Key decisions:
+  - No external deps; stdlib only
+  - Two separate middleware: RequestTransform (modifies request before proxy) and ResponseTransform (buffers response, transforms, flushes)
+  - resolveVariables: regexp.ReplaceAllStringFunc on ${...} pattern; 8 built-in variables (request_id, client_ip, timestamp_iso, timestamp_unix, latency_ms, route_name, method, path); unknown left unchanged
+  - Header transform order: remove → rename → add; rename preserves multi-value headers
+  - Body transforms: only on application/json with map[string]any top level; arrays/non-JSON pass through; order: strip → rename → inject
+  - bufferingResponseWriter: standalone impl (no embed), captures headers/status/body; Transfer-Encoding removed after buffering
+  - RequestTransform always stores start time in context for latency_ms calculation (even with nil config)
+  - Content-Length updated after both request and response body transforms
+  - clientIP: X-Forwarded-For first entry → RemoteAddr fallback (strips port)
+  - Test uses RequestID() middleware to set request ID in context rather than exporting internal key type
+- Files created:
+  - internal/middleware/transform/transform.go (resolveVariables, transformHeaders, transformBody, RequestTransform, ResponseTransform, bufferingResponseWriter, clientIP, isJSON)
+  - internal/middleware/transform/transform_test.go (50 subtests: resolveVariables 13, transformHeaders 9, transformBody 11, bufferingResponseWriter 6, RequestTransform 5, ResponseTransform 6, integration 1)
+- Files modified:
+  - cmd/gateway/main.go (import transform, wire RequestTransform+ResponseTransform per-route before CORS override)
+- All validations pass: gofmt, go test ./..., go vet ./...

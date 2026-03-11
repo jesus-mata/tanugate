@@ -16,6 +16,7 @@ import (
 	"github.com/NextSolutionCUU/api-gateway/internal/middleware/circuitbreaker"
 	"github.com/NextSolutionCUU/api-gateway/internal/middleware/ratelimit"
 	"github.com/NextSolutionCUU/api-gateway/internal/middleware/retry"
+	"github.com/NextSolutionCUU/api-gateway/internal/middleware/transform"
 	"github.com/NextSolutionCUU/api-gateway/internal/observability"
 	"github.com/NextSolutionCUU/api-gateway/internal/proxy"
 	"github.com/NextSolutionCUU/api-gateway/internal/router"
@@ -107,6 +108,12 @@ func main() {
 			}
 		} else if route.Retry != nil {
 			h = retry.Retry(route.Retry, nil, h)
+		}
+
+		// Wrap with request/response transforms.
+		if route.Transform != nil {
+			h = transform.RequestTransform(route.Transform.Request, route.Transform.MaxBodySize)(
+				transform.ResponseTransform(route.Transform.Response, route.Transform.MaxBodySize)(h))
 		}
 
 		if cfg.Routes[i].CORS != nil {

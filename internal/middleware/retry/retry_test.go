@@ -2,7 +2,6 @@ package retry
 
 import (
 	"bytes"
-	"context"
 	"encoding/json"
 	"errors"
 	"io"
@@ -493,9 +492,4 @@ func TestIntegration_CircuitTripsAndRecovers(t *testing.T) {
 	if rec.Code != 200 {
 		t.Fatalf("expected 200 after recovery, got %d", rec.Code)
 	}
-
-	// CB should be closed now.
-	ctx, cancel := context.WithCancel(context.Background())
-	_ = ctx
-	cancel()
 }

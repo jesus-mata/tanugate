@@ -16,6 +16,8 @@ import (
 	"github.com/NextSolutionCUU/api-gateway/internal/middleware/circuitbreaker"
 )
 
+const maxRetryBodySize = 10 << 20 // 10 MB
+
 // sleepFunc is the function used to pause between retries. It can be replaced
 // in tests via WithSleep to avoid real delays.
 type sleepFunc func(time.Duration)
@@ -95,10 +97,14 @@ func (h *retryHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	var bodyBytes []byte
 	if r.Body != nil {
 		var err error
-		bodyBytes, err = io.ReadAll(r.Body)
+		bodyBytes, err = io.ReadAll(io.LimitReader(r.Body, maxRetryBodySize+1))
 		r.Body.Close()
 		if err != nil {
 			writeJSON(w, http.StatusBadGateway, "bad_gateway", "failed to read request body")
+			return
+		}
+		if len(bodyBytes) > maxRetryBodySize {
+			writeJSON(w, http.StatusRequestEntityTooLarge, "request_too_large", "request body exceeds 10MB retry buffer limit")
 			return
 		}
 	}

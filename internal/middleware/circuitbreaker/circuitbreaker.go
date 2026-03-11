@@ -110,10 +110,14 @@ func (cb *CircuitBreaker) State() State {
 func (cb *CircuitBreaker) Execute(fn func() error) error {
 	cb.mu.Lock()
 
+	// Section A: pre-fn — check whether we can proceed.
+	var preFrom State
+	var preChanged bool
+
 	switch cb.state {
 	case StateOpen:
 		if cb.now().Sub(cb.openedAt) >= cb.timeout {
-			cb.setState(StateHalfOpen)
+			preFrom, preChanged = cb.setState(StateHalfOpen)
 		} else {
 			cb.mu.Unlock()
 			return ErrCircuitOpen
@@ -133,39 +137,60 @@ func (cb *CircuitBreaker) Execute(fn func() error) error {
 
 	cb.mu.Unlock()
 
+	// Fire pre-fn callback (Open→HalfOpen) outside the lock.
+	if preChanged && cb.onStateChange != nil {
+		cb.onStateChange(cb.routeName, preFrom, StateHalfOpen)
+	}
+
 	// Execute fn outside the lock.
 	err := fn()
 
+	// Section B: post-fn — record the outcome and possibly transition.
 	cb.mu.Lock()
-	defer cb.mu.Unlock()
 
 	if isProbe {
 		cb.halfOpenProbing = false
 	}
 
+	var postFrom State
+	var postTo State
+	var postChanged bool
+
 	if err != nil {
 		cb.failureCount++
 		cb.successCount = 0
 		if cb.state == StateHalfOpen {
-			cb.setState(StateOpen)
+			postFrom, postChanged = cb.setState(StateOpen)
+			postTo = StateOpen
 		} else if cb.state == StateClosed && cb.failureCount >= cb.failureThreshold {
-			cb.setState(StateOpen)
+			postFrom, postChanged = cb.setState(StateOpen)
+			postTo = StateOpen
 		}
 	} else {
 		cb.successCount++
 		cb.failureCount = 0
 		if cb.state == StateHalfOpen && cb.successCount >= cb.successThreshold {
-			cb.setState(StateClosed)
+			postFrom, postChanged = cb.setState(StateClosed)
+			postTo = StateClosed
 		}
+	}
+
+	cb.mu.Unlock()
+
+	// Fire post-fn callback outside the lock.
+	if postChanged && cb.onStateChange != nil {
+		cb.onStateChange(cb.routeName, postFrom, postTo)
 	}
 
 	return err
 }
 
-// setState transitions the circuit breaker to a new state and fires the
-// onStateChange callback if one is registered. Must be called with mu held.
-func (cb *CircuitBreaker) setState(to State) {
-	from := cb.state
+// setState transitions the circuit breaker to a new state. It returns the
+// previous state and whether a transition actually occurred so the caller can
+// fire the onStateChange callback after releasing the mutex.
+// Must be called with mu held.
+func (cb *CircuitBreaker) setState(to State) (from State, changed bool) {
+	from = cb.state
 	cb.state = to
 	cb.failureCount = 0
 	cb.successCount = 0
@@ -175,7 +200,5 @@ func (cb *CircuitBreaker) setState(to State) {
 		cb.openedAt = cb.now()
 	}
 
-	if cb.onStateChange != nil {
-		cb.onStateChange(cb.routeName, from, to)
-	}
+	return from, from != to
 }

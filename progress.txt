@@ -178,3 +178,27 @@
 - Files modified:
   - cmd/gateway/main.go (import transform, wire RequestTransform+ResponseTransform per-route before CORS override)
 - All validations pass: gofmt, go test ./..., go vet ./...
+
+## Phase 8: Deployment + Polish — COMPLETE
+
+- Task: Dockerfile, Makefile, config templates, comprehensive integration tests, polish pass
+- Key decisions:
+  - Multi-stage Docker build: golang:1.25-alpine → alpine:3.21; non-root user (uid 1000)
+  - Makefile: build, test, lint, vet, fmt, run, docker-build, docker-push, clean targets
+  - Production config/gateway.yaml: env var placeholders for all secrets, empty routes
+  - config/gateway.example.yaml: ~180-line fully annotated reference with all feature combos
+  - CRITICAL FIX: moved auth.Middleware and ratelimit.RateLimit from global chain to per-route handler chains; in global chain they ran before router and never had route context, so auth/rate-limit were silently skipped
+  - Per-route middleware order: proxy → CB/retry → transforms → CORS override → auth → rate-limit (outermost runs first)
+  - Integration test: 26 test cases covering forwarding, JWT auth (valid/invalid/missing/expired), API key auth (valid/invalid), public route, rate limit (enforced/headers), circuit breaker (open/recover), retry, header transforms (add/remove), response transforms (headers/body), body transforms (inject/strip/rename), CORS (preflight/regular/override), health, metrics, 404, panic recovery, request ID (present/propagated), method filtering
+  - Error format already consistent across all middleware: {"error":"...","message":"..."} with Content-Type: application/json
+- Files created:
+  - Dockerfile (multi-stage, non-root, 11 lines)
+  - Makefile (8 targets)
+  - .dockerignore (.git, bin/, *.md, plans/, .claude/, *.txt, tasks.json)
+  - config/gateway.example.yaml (fully annotated reference)
+- Files modified:
+  - config/gateway.yaml (production template with env var placeholders)
+  - cmd/gateway/main.go (moved auth+ratelimit from global to per-route chains)
+  - internal/integration_test.go (rewritten: 26 tests, mockUpstream, full middleware stack)
+  - tasks.json (status → complete)
+- All validations pass: gofmt, go test ./..., go vet ./...

@@ -2,61 +2,28 @@ package auth
 
 import (
 	"context"
-	"crypto/ecdsa"
-	"crypto/elliptic"
-	"crypto/rsa"
-	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"math/big"
 	"net/http"
+	"net/url"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/NextSolutionCUU/api-gateway/internal/config"
-	"github.com/golang-jwt/jwt/v5"
+	"github.com/coreos/go-oidc/v3/oidc"
 )
 
 // OIDCAuthenticator validates tokens using OIDC JWKS or token introspection.
 type OIDCAuthenticator struct {
-	cache            *jwksCache
+	verifier         *oidc.IDTokenVerifier // nil in introspection-only mode
+	issuerURL        string
 	audience         string
 	introspectionURL string
 	clientID         string
 	clientSecret     string
 	httpClient       *http.Client
-}
-
-type jwksCache struct {
-	mu       sync.RWMutex
-	keys     map[string]any // kid → public key
-	expiry   time.Time
-	ttl      time.Duration
-	fetchURL string
-	client   *http.Client
-	cancel   context.CancelFunc
-}
-
-type jwksResponse struct {
-	Keys []jwkKey `json:"keys"`
-}
-
-type jwkKey struct {
-	Kty string `json:"kty"`
-	Kid string `json:"kid"`
-	Alg string `json:"alg"`
-	Use string `json:"use"`
-	N   string `json:"n"`
-	E   string `json:"e"`
-	Crv string `json:"crv"`
-	X   string `json:"x"`
-	Y   string `json:"y"`
-}
-
-type discoveryDoc struct {
-	JWKSURI string `json:"jwks_uri"`
+	cancel           context.CancelFunc
 }
 
 type introspectionResponse struct {
@@ -65,60 +32,77 @@ type introspectionResponse struct {
 	ClientID string `json:"client_id"`
 }
 
-// NewOIDCAuthenticator creates an OIDC authenticator. It resolves the JWKS URL
-// (via discovery if needed), fetches the initial key set, and starts a
-// background refresh goroutine.
+// NewOIDCAuthenticator creates an OIDC authenticator. It supports three modes:
+//   - Full discovery: issuer_url is set → uses OIDC discovery for JWKS
+//   - Direct JWKS: jwks_url is set (no issuer_url) → fetches keys directly
+//   - Introspection-only: introspection_url is set (no JWKS/issuer)
 func NewOIDCAuthenticator(cfg *config.OIDCConfig) (*OIDCAuthenticator, error) {
 	httpClient := &http.Client{Timeout: 10 * time.Second}
+	ctx, cancel := context.WithCancel(context.Background())
 
 	a := &OIDCAuthenticator{
+		issuerURL:        cfg.IssuerURL,
 		audience:         cfg.Audience,
 		introspectionURL: cfg.IntrospectionURL,
 		clientID:         cfg.ClientID,
 		clientSecret:     cfg.ClientSecret,
 		httpClient:       httpClient,
+		cancel:           cancel,
 	}
 
-	// If only introspection is configured, no JWKS needed.
+	// Mode 3: Introspection-only — no verifier needed.
 	if cfg.IntrospectionURL != "" && cfg.JWKSURL == "" && cfg.IssuerURL == "" {
 		return a, nil
 	}
 
-	jwksURL := cfg.JWKSURL
-	if jwksURL == "" && cfg.IssuerURL != "" {
-		discovered, err := discoverJWKSURL(httpClient, cfg.IssuerURL)
+	oidcCfg := buildOIDCConfig(cfg)
+
+	// Inject our HTTP client into the context for go-oidc's HTTP calls.
+	oidcCtx := oidc.ClientContext(ctx, httpClient)
+
+	switch {
+	case cfg.IssuerURL != "":
+		// Mode 1: Full discovery.
+		provider, err := oidc.NewProvider(oidcCtx, cfg.IssuerURL)
 		if err != nil {
+			cancel()
 			return nil, fmt.Errorf("oidc discovery: %w", err)
 		}
-		jwksURL = discovered
-	}
+		a.verifier = provider.Verifier(&oidcCfg)
 
-	if jwksURL == "" {
+	case cfg.JWKSURL != "":
+		// Mode 2: Direct JWKS — no issuer known, force skip issuer check.
+		oidcCfg.SkipIssuerCheck = true
+		keySet := oidc.NewRemoteKeySet(oidcCtx, cfg.JWKSURL)
+		a.verifier = oidc.NewVerifier(cfg.IssuerURL, keySet, &oidcCfg)
+
+	default:
+		cancel()
 		return nil, errors.New("oidc: either jwks_url, issuer_url, or introspection_url is required")
 	}
 
-	ttl := cfg.CacheTTL
-	if ttl == 0 {
-		ttl = 15 * time.Minute
-	}
-
-	ctx, cancel := context.WithCancel(context.Background())
-	cache := &jwksCache{
-		ttl:      ttl,
-		fetchURL: jwksURL,
-		client:   httpClient,
-		cancel:   cancel,
-	}
-
-	if err := cache.refresh(); err != nil {
-		cancel()
-		return nil, fmt.Errorf("oidc: initial JWKS fetch: %w", err)
-	}
-
-	go cache.backgroundRefresh(ctx)
-
-	a.cache = cache
 	return a, nil
+}
+
+// buildOIDCConfig translates our gateway config into go-oidc's verification config.
+func buildOIDCConfig(cfg *config.OIDCConfig) oidc.Config {
+	c := oidc.Config{
+		SkipIssuerCheck: cfg.SkipIssuerCheck,
+	}
+	// go-oidc uses ClientID for audience checking.
+	if cfg.Audience != "" {
+		c.ClientID = cfg.Audience
+	} else {
+		c.SkipClientIDCheck = true
+	}
+	if len(cfg.AllowedAlgorithms) > 0 {
+		c.SupportedSigningAlgs = cfg.AllowedAlgorithms
+	}
+	// Force skip issuer check when no issuer URL is configured.
+	if cfg.IssuerURL == "" {
+		c.SkipIssuerCheck = true
+	}
+	return c
 }
 
 // Authenticate validates the token, preferring introspection if configured,
@@ -139,59 +123,36 @@ func (a *OIDCAuthenticator) Authenticate(r *http.Request) (*AuthResult, error) {
 		return a.introspect(tokenString)
 	}
 
-	return a.validateJWKS(tokenString)
+	return a.verifyToken(r.Context(), tokenString)
 }
 
-// Stop cancels the background JWKS refresh goroutine.
+// Stop cancels the background context used by the OIDC provider/key set.
 func (a *OIDCAuthenticator) Stop() {
-	if a.cache != nil && a.cache.cancel != nil {
-		a.cache.cancel()
+	if a.cancel != nil {
+		a.cancel()
 	}
 }
 
-func (a *OIDCAuthenticator) validateJWKS(tokenString string) (*AuthResult, error) {
-	parserOpts := []jwt.ParserOption{}
-	if a.audience != "" {
-		parserOpts = append(parserOpts, jwt.WithAudience(a.audience))
-	}
-
-	token, err := jwt.Parse(tokenString, func(t *jwt.Token) (any, error) {
-		kid, ok := t.Header["kid"].(string)
-		if !ok {
-			return nil, errors.New("token missing kid header")
-		}
-		key := a.cache.getKey(kid)
-		if key == nil {
-			return nil, fmt.Errorf("unknown kid: %s", kid)
-		}
-		return key, nil
-	}, parserOpts...)
-
+func (a *OIDCAuthenticator) verifyToken(ctx context.Context, rawToken string) (*AuthResult, error) {
+	idToken, err := a.verifier.Verify(ctx, rawToken)
 	if err != nil {
-		return nil, classifyJWTError(err)
+		return nil, classifyVerifyError(err)
 	}
 
-	claims, ok := token.Claims.(jwt.MapClaims)
-	if !ok || !token.Valid {
-		return nil, errors.New("invalid token")
+	var claims map[string]any
+	if err := idToken.Claims(&claims); err != nil {
+		return nil, fmt.Errorf("extracting claims: %w", err)
 	}
-
-	claimsMap := make(map[string]any, len(claims))
-	for k, v := range claims {
-		claimsMap[k] = v
-	}
-
-	subject, _ := claims.GetSubject()
 
 	return &AuthResult{
-		Subject: subject,
-		Claims:  claimsMap,
+		Subject: idToken.Subject,
+		Claims:  claims,
 	}, nil
 }
 
 func (a *OIDCAuthenticator) introspect(tokenString string) (*AuthResult, error) {
-	body := strings.NewReader("token=" + tokenString)
-	req, err := http.NewRequest(http.MethodPost, a.introspectionURL, body)
+	data := url.Values{"token": {tokenString}}
+	req, err := http.NewRequest(http.MethodPost, a.introspectionURL, strings.NewReader(data.Encode()))
 	if err != nil {
 		return nil, fmt.Errorf("introspection request: %w", err)
 	}
@@ -225,136 +186,20 @@ func (a *OIDCAuthenticator) introspect(tokenString string) (*AuthResult, error) 
 	}, nil
 }
 
-func (c *jwksCache) getKey(kid string) any {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
-	return c.keys[kid]
-}
-
-func (c *jwksCache) refresh() error {
-	resp, err := c.client.Get(c.fetchURL)
-	if err != nil {
-		return fmt.Errorf("fetching JWKS: %w", err)
-	}
-	defer resp.Body.Close()
-
-	var jwks jwksResponse
-	if err := json.NewDecoder(resp.Body).Decode(&jwks); err != nil {
-		return fmt.Errorf("decoding JWKS: %w", err)
+// classifyVerifyError translates go-oidc verification errors into user-friendly messages.
+func classifyVerifyError(err error) error {
+	var expiredErr *oidc.TokenExpiredError
+	if errors.As(err, &expiredErr) {
+		return errors.New("token expired")
 	}
 
-	keys := make(map[string]any, len(jwks.Keys))
-	for _, k := range jwks.Keys {
-		pub, err := parseJWK(k)
-		if err != nil {
-			continue // skip keys we can't parse
-		}
-		keys[k.Kid] = pub
-	}
-
-	c.mu.Lock()
-	c.keys = keys
-	c.expiry = time.Now().Add(c.ttl)
-	c.mu.Unlock()
-
-	return nil
-}
-
-func (c *jwksCache) backgroundRefresh(ctx context.Context) {
-	// Refresh at 80% of TTL to avoid serving stale keys.
-	interval := time.Duration(float64(c.ttl) * 0.8)
-	ticker := time.NewTicker(interval)
-	defer ticker.Stop()
-
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-ticker.C:
-			_ = c.refresh() // best-effort; stale keys still serve
-		}
-	}
-}
-
-func discoverJWKSURL(client *http.Client, issuerURL string) (string, error) {
-	url := strings.TrimRight(issuerURL, "/") + "/.well-known/openid-configuration"
-	resp, err := client.Get(url)
-	if err != nil {
-		return "", fmt.Errorf("fetching discovery doc: %w", err)
-	}
-	defer resp.Body.Close()
-
-	var doc discoveryDoc
-	if err := json.NewDecoder(resp.Body).Decode(&doc); err != nil {
-		return "", fmt.Errorf("decoding discovery doc: %w", err)
-	}
-	if doc.JWKSURI == "" {
-		return "", errors.New("discovery doc missing jwks_uri")
-	}
-	return doc.JWKSURI, nil
-}
-
-func parseJWK(k jwkKey) (any, error) {
-	switch k.Kty {
-	case "RSA":
-		return parseRSAJWK(k)
-	case "EC":
-		return parseECJWK(k)
+	errMsg := err.Error()
+	switch {
+	case strings.Contains(errMsg, "issuer") || strings.Contains(errMsg, "different provider"):
+		return errors.New("invalid token issuer")
+	case strings.Contains(errMsg, "audience"):
+		return errors.New("invalid token audience")
 	default:
-		return nil, fmt.Errorf("unsupported key type: %s", k.Kty)
-	}
-}
-
-func parseRSAJWK(k jwkKey) (*rsa.PublicKey, error) {
-	nBytes, err := base64.RawURLEncoding.DecodeString(k.N)
-	if err != nil {
-		return nil, fmt.Errorf("decoding n: %w", err)
-	}
-	eBytes, err := base64.RawURLEncoding.DecodeString(k.E)
-	if err != nil {
-		return nil, fmt.Errorf("decoding e: %w", err)
-	}
-
-	n := new(big.Int).SetBytes(nBytes)
-	e := new(big.Int).SetBytes(eBytes)
-
-	return &rsa.PublicKey{
-		N: n,
-		E: int(e.Int64()),
-	}, nil
-}
-
-func parseECJWK(k jwkKey) (*ecdsa.PublicKey, error) {
-	xBytes, err := base64.RawURLEncoding.DecodeString(k.X)
-	if err != nil {
-		return nil, fmt.Errorf("decoding x: %w", err)
-	}
-	yBytes, err := base64.RawURLEncoding.DecodeString(k.Y)
-	if err != nil {
-		return nil, fmt.Errorf("decoding y: %w", err)
-	}
-
-	curve, err := curveForName(k.Crv)
-	if err != nil {
-		return nil, err
-	}
-
-	return &ecdsa.PublicKey{
-		Curve: curve,
-		X:     new(big.Int).SetBytes(xBytes),
-		Y:     new(big.Int).SetBytes(yBytes),
-	}, nil
-}
-
-func curveForName(name string) (elliptic.Curve, error) {
-	switch name {
-	case "P-256":
-		return elliptic.P256(), nil
-	case "P-384":
-		return elliptic.P384(), nil
-	case "P-521":
-		return elliptic.P521(), nil
-	default:
-		return nil, fmt.Errorf("unsupported curve: %s", name)
+		return fmt.Errorf("invalid token: %w", err)
 	}
 }

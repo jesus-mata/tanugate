@@ -90,13 +90,14 @@ type APIKeyEntry struct {
 
 // OIDCConfig holds OpenID Connect authentication settings.
 type OIDCConfig struct {
-	IssuerURL        string        `yaml:"issuer_url"`
-	JWKSURL          string        `yaml:"jwks_url"`
-	IntrospectionURL string        `yaml:"introspection_url"`
-	ClientID         string        `yaml:"client_id"`
-	ClientSecret     string        `yaml:"client_secret"`
-	Audience         string        `yaml:"audience"`
-	CacheTTL         time.Duration `yaml:"cache_ttl"`
+	IssuerURL         string   `yaml:"issuer_url"`
+	JWKSURL           string   `yaml:"jwks_url"`
+	IntrospectionURL  string   `yaml:"introspection_url"`
+	ClientID          string   `yaml:"client_id"`
+	ClientSecret      string   `yaml:"client_secret"`
+	Audience          string   `yaml:"audience"`
+	AllowedAlgorithms []string `yaml:"allowed_algorithms"`
+	SkipIssuerCheck   bool     `yaml:"skip_issuer_check"`
 }
 
 // RouteConfig describes a single route handled by the gateway.

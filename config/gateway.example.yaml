@@ -101,11 +101,15 @@ auth_providers:
   # oidc_provider:
   #   type: "oidc"
   #   oidc:
-  #     issuer_url: "https://auth.example.com"  # Used for .well-known/openid-configuration discovery
+  #     issuer_url: "https://auth.example.com"
   #     audience: "my-api"
-  #     # OR specify jwks_url directly:
+  #     allowed_algorithms:           # Default: ["RS256"]
+  #       - "RS256"
+  #       - "ES256"
+  #     skip_issuer_check: false      # Set true for multi-tenant Azure AD
+  #     # OR direct JWKS (no discovery, issuer check skipped):
   #     # jwks_url: "https://auth.example.com/.well-known/jwks.json"
-  #     # OR use introspection:
+  #     # OR opaque token introspection:
   #     # introspection_url: "https://auth.example.com/oauth2/introspect"
   #     # client_id: "gateway"
   #     # client_secret: "${OIDC_CLIENT_SECRET}"

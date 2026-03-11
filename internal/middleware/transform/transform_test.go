@@ -899,8 +899,11 @@ func TestBufferingResponseWriter_ExceedsLimit(t *testing.T) {
 	}
 	// Second write exceeds limit.
 	n, err = buf.Write([]byte("world!"))
-	if n != 0 || err != nil {
-		t.Fatalf("second Write = (%d, %v), want (0, nil)", n, err)
+	if n != 0 {
+		t.Fatalf("second Write n = %d, want 0", n)
+	}
+	if err == nil {
+		t.Fatal("second Write should return an error")
 	}
 	if !buf.exceeded {
 		t.Error("should be exceeded after second write")

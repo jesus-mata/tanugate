@@ -112,17 +112,8 @@ func main() {
 
 		// Wrap with request/response transforms.
 		if route.Transform != nil {
-			var reqCfg, resCfg *config.DirectionTransform
-			if route.Transform.Request != nil {
-				reqCfg = route.Transform.Request
-			}
-			if route.Transform.Response != nil {
-				resCfg = route.Transform.Response
-			}
-			h = transform.RequestTransform(reqCfg, route.Transform.MaxBodySize)(transform.ResponseTransform(resCfg, route.Transform.MaxBodySize)(h))
-		} else {
-			// Always set start time even without transforms (for consistency).
-			h = transform.RequestTransform(nil, 0)(h)
+			h = transform.RequestTransform(route.Transform.Request, route.Transform.MaxBodySize)(
+				transform.ResponseTransform(route.Transform.Response, route.Transform.MaxBodySize)(h))
 		}
 
 		if cfg.Routes[i].CORS != nil {

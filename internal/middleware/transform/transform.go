@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"log/slog"
 	"net"
@@ -289,7 +290,7 @@ func (w *bufferingResponseWriter) Write(b []byte) (int, error) {
 	}
 	if w.maxBody > 0 && int64(w.body.Len())+int64(len(b)) > w.maxBody {
 		w.exceeded = true
-		return 0, nil
+		return 0, errors.New("response body exceeds transform size limit")
 	}
 	return w.body.Write(b)
 }

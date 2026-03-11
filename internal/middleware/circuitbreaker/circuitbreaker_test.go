@@ -3,6 +3,7 @@ package circuitbreaker
 import (
 	"errors"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -278,5 +279,73 @@ func TestCountersResetOnFailure(t *testing.T) {
 
 	if cb.State() != StateClosed {
 		t.Fatalf("expected StateClosed after full success threshold, got %v", cb.State())
+	}
+}
+
+func TestHalfOpen_OnlyOneProbeAllowed(t *testing.T) {
+	now := time.Now()
+	cb := newTestCB(defaultCfg(), &now)
+
+	// Trip to Open.
+	fail := errors.New("fail")
+	for i := 0; i < 3; i++ {
+		cb.Execute(func() error { return fail })
+	}
+
+	// Advance past timeout so next Execute transitions to HalfOpen.
+	now = now.Add(6 * time.Second)
+
+	// Block the probe so concurrent goroutines can arrive while it is in-flight.
+	probeStarted := make(chan struct{})
+	probeRelease := make(chan struct{})
+
+	var wg sync.WaitGroup
+	var execCount atomic.Int32
+	var rejectCount atomic.Int32
+
+	// Launch the probe goroutine.
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		err := cb.Execute(func() error {
+			execCount.Add(1)
+			close(probeStarted) // signal that the probe is running
+			<-probeRelease      // block until released
+			return nil
+		})
+		if err != nil {
+			t.Errorf("probe goroutine got unexpected error: %v", err)
+		}
+	}()
+
+	// Wait for the probe to actually start executing fn.
+	<-probeStarted
+
+	// Launch several concurrent goroutines — they should all be rejected.
+	const concurrentRequests = 10
+	for i := 0; i < concurrentRequests; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			err := cb.Execute(func() error {
+				execCount.Add(1)
+				return nil
+			})
+			if errors.Is(err, ErrCircuitOpen) {
+				rejectCount.Add(1)
+			}
+		}()
+	}
+
+	// Give goroutines time to hit the circuit breaker, then release the probe.
+	time.Sleep(50 * time.Millisecond)
+	close(probeRelease)
+	wg.Wait()
+
+	if got := execCount.Load(); got != 1 {
+		t.Fatalf("expected exactly 1 fn execution (the probe), got %d", got)
+	}
+	if got := rejectCount.Load(); got != int32(concurrentRequests) {
+		t.Fatalf("expected %d rejections, got %d", concurrentRequests, got)
 	}
 }

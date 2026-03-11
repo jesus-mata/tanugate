@@ -59,13 +59,16 @@ func WithClock(fn func() time.Time) Option {
 }
 
 // CircuitBreaker implements a three-state circuit breaker (Closed → Open →
-// HalfOpen → Closed) that wraps upstream calls.
+// HalfOpen → Closed) that wraps upstream calls. In HalfOpen state, only a
+// single probe request is allowed through; all others are rejected with
+// ErrCircuitOpen until the probe completes.
 type CircuitBreaker struct {
 	mu sync.Mutex
 
-	state        State
-	failureCount int
-	successCount int
+	state          State
+	failureCount   int
+	successCount   int
+	halfOpenProbing bool // true while a probe request is in-flight during HalfOpen
 
 	failureThreshold int
 	successThreshold int
@@ -117,6 +120,17 @@ func (cb *CircuitBreaker) Execute(fn func() error) error {
 		}
 	}
 
+	// In HalfOpen, only one probe request is allowed at a time.
+	isProbe := false
+	if cb.state == StateHalfOpen {
+		if cb.halfOpenProbing {
+			cb.mu.Unlock()
+			return ErrCircuitOpen
+		}
+		cb.halfOpenProbing = true
+		isProbe = true
+	}
+
 	cb.mu.Unlock()
 
 	// Execute fn outside the lock.
@@ -124,6 +138,10 @@ func (cb *CircuitBreaker) Execute(fn func() error) error {
 
 	cb.mu.Lock()
 	defer cb.mu.Unlock()
+
+	if isProbe {
+		cb.halfOpenProbing = false
+	}
 
 	if err != nil {
 		cb.failureCount++
@@ -151,6 +169,7 @@ func (cb *CircuitBreaker) setState(to State) {
 	cb.state = to
 	cb.failureCount = 0
 	cb.successCount = 0
+	cb.halfOpenProbing = false
 
 	if to == StateOpen {
 		cb.openedAt = cb.now()

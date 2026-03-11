@@ -13,7 +13,9 @@ import (
 	"github.com/NextSolutionCUU/api-gateway/internal/config"
 	"github.com/NextSolutionCUU/api-gateway/internal/middleware"
 	"github.com/NextSolutionCUU/api-gateway/internal/middleware/auth"
+	"github.com/NextSolutionCUU/api-gateway/internal/middleware/circuitbreaker"
 	"github.com/NextSolutionCUU/api-gateway/internal/middleware/ratelimit"
+	"github.com/NextSolutionCUU/api-gateway/internal/middleware/retry"
 	"github.com/NextSolutionCUU/api-gateway/internal/observability"
 	"github.com/NextSolutionCUU/api-gateway/internal/proxy"
 	"github.com/NextSolutionCUU/api-gateway/internal/router"
@@ -79,9 +81,34 @@ func main() {
 		slog.Info("Registered auth provider", "name", name, "type", provider.Type)
 	}
 
+	registry := prometheus.NewRegistry()
+	registry.MustRegister(collectors.NewProcessCollector(collectors.ProcessCollectorOpts{}))
+	registry.MustRegister(collectors.NewGoCollector())
+	metrics := observability.NewMetricsCollector(registry)
+
 	handlers := make(map[string]http.Handler, len(cfg.Routes))
 	for i := range cfg.Routes {
 		h := proxy.NewProxyHandler(&cfg.Routes[i])
+
+		// Wrap with circuit breaker and/or retry.
+		route := &cfg.Routes[i]
+		if route.CircuitBreaker != nil {
+			cb := circuitbreaker.New(route.CircuitBreaker, route.Name,
+				circuitbreaker.WithOnStateChange(func(routeName string, from, to circuitbreaker.State) {
+					slog.Info("circuit breaker state change", "route", routeName, "from", from, "to", to)
+					metrics.CircuitBreakerState.WithLabelValues(routeName, to.String()).Set(1)
+					metrics.CircuitBreakerState.WithLabelValues(routeName, from.String()).Set(0)
+				}),
+			)
+			if route.Retry != nil {
+				h = retry.Retry(route.Retry, cb, h)
+			} else {
+				h = retry.WithCircuitBreaker(cb, h)
+			}
+		} else if route.Retry != nil {
+			h = retry.Retry(route.Retry, nil, h)
+		}
+
 		if cfg.Routes[i].CORS != nil {
 			h = middleware.CORSOverride(*cfg.Routes[i].CORS)(h)
 		}
@@ -89,11 +116,6 @@ func main() {
 	}
 
 	r := router.New(cfg.Routes, handlers)
-
-	registry := prometheus.NewRegistry()
-	registry.MustRegister(collectors.NewProcessCollector(collectors.ProcessCollectorOpts{}))
-	registry.MustRegister(collectors.NewGoCollector())
-	metrics := observability.NewMetricsCollector(registry)
 
 	globalChain := middleware.Chain(
 		middleware.Recovery(),

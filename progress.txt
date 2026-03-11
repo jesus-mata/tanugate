@@ -132,3 +132,28 @@
   - cmd/gateway/main.go (build limiter backend, wire RateLimit middleware into global chain, health checker, graceful shutdown)
   - go.mod, go.sum (go-redis dependency)
 - All validations pass: gofmt, go test ./..., go vet ./..., go test -race
+
+## Phase 6: Resilience (Circuit Breaker + Retry) — COMPLETE
+
+- Task: Circuit breaker state machine + retry with exponential backoff + jitter, per-route wiring
+- Key decisions:
+  - No external deps; stdlib only
+  - CB: three-state machine (Closed/Open/HalfOpen); fn() executes outside lock for concurrency
+  - CB options: WithOnStateChange (for Prometheus gauge), WithClock (for testing)
+  - Retry: body buffered into []byte, replayed via io.NopCloser(bytes.NewReader) per attempt
+  - Backoff: initialDelay * multiplier^(attempt-1) * jitter where jitter ∈ [0.5, 1.5)
+  - httptest.NewRecorder captures per-attempt response; only final success copied to real writer
+  - CB opens on 500+ status; retryable codes configurable per route
+  - Circuit open → 503, retries exhausted → 502, client disconnect → 499
+  - WithCircuitBreaker(cb, proxy) for CB-only (no retry) wiring
+  - Prometheus: gateway_circuit_breaker_state gauge updated via onStateChange callback in main.go
+  - Registry/metrics moved before handler loop so CB callback can reference metrics
+  - Context cancellation checked before and after sleep
+- Files created:
+  - internal/middleware/circuitbreaker/circuitbreaker.go (State machine, Execute, options)
+  - internal/middleware/circuitbreaker/circuitbreaker_test.go (11 tests)
+  - internal/middleware/retry/retry.go (Retry, WithCircuitBreaker, backoff, body buffering)
+  - internal/middleware/retry/retry_test.go (15 tests + 2 integration)
+- Files modified:
+  - cmd/gateway/main.go (import CB+retry, per-route wiring, moved registry init before handler loop)
+- All validations pass: gofmt, go test ./..., go vet ./...

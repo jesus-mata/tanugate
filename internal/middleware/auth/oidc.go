@@ -17,7 +17,6 @@ import (
 // OIDCAuthenticator validates tokens using OIDC JWKS or token introspection.
 type OIDCAuthenticator struct {
 	verifier         *oidc.IDTokenVerifier // nil in introspection-only mode
-	issuerURL        string
 	audience         string
 	introspectionURL string
 	clientID         string
@@ -38,22 +37,22 @@ type introspectionResponse struct {
 //   - Introspection-only: introspection_url is set (no JWKS/issuer)
 func NewOIDCAuthenticator(cfg *config.OIDCConfig) (*OIDCAuthenticator, error) {
 	httpClient := &http.Client{Timeout: 10 * time.Second}
-	ctx, cancel := context.WithCancel(context.Background())
 
 	a := &OIDCAuthenticator{
-		issuerURL:        cfg.IssuerURL,
 		audience:         cfg.Audience,
 		introspectionURL: cfg.IntrospectionURL,
 		clientID:         cfg.ClientID,
 		clientSecret:     cfg.ClientSecret,
 		httpClient:       httpClient,
-		cancel:           cancel,
 	}
 
 	// Mode 3: Introspection-only — no verifier needed.
 	if cfg.IntrospectionURL != "" && cfg.JWKSURL == "" && cfg.IssuerURL == "" {
 		return a, nil
 	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	a.cancel = cancel
 
 	oidcCfg := buildOIDCConfig(cfg)
 

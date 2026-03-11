@@ -299,6 +299,41 @@ func TestOIDC_AlgorithmRestriction(t *testing.T) {
 	}
 }
 
+func TestOIDC_ExpiredToken(t *testing.T) {
+	privKey, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	srv := setupOIDCTestServer(t, "kid-1", &privKey.PublicKey)
+
+	a, err := NewOIDCAuthenticator(&config.OIDCConfig{
+		IssuerURL: srv.URL,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer a.Stop()
+
+	tokenStr := signToken(t, privKey, "kid-1", jwt.MapClaims{
+		"sub": "oidc-user",
+		"iss": srv.URL,
+		"exp": jwt.NewNumericDate(time.Now().Add(-time.Hour)),
+		"iat": jwt.NewNumericDate(time.Now().Add(-2 * time.Hour)),
+	})
+
+	r := httptest.NewRequest(http.MethodGet, "/", nil)
+	r.Header.Set("Authorization", "Bearer "+tokenStr)
+
+	_, err = a.Authenticate(r)
+	if err == nil {
+		t.Fatal("expected error for expired token")
+	}
+	if err.Error() != "token expired" {
+		t.Fatalf("expected 'token expired', got %q", err.Error())
+	}
+}
+
 func TestOIDC_Introspection(t *testing.T) {
 	introspectionSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		r.ParseForm()

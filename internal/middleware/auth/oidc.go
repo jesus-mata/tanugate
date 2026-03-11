@@ -166,6 +166,10 @@ func (a *OIDCAuthenticator) introspect(tokenString string) (*AuthResult, error) 
 	}
 	defer resp.Body.Close()
 
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("introspection endpoint returned status %d", resp.StatusCode)
+	}
+
 	var result introspectionResponse
 	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
 		return nil, fmt.Errorf("introspection decode: %w", err)
@@ -186,6 +190,10 @@ func (a *OIDCAuthenticator) introspect(tokenString string) (*AuthResult, error) 
 }
 
 // classifyVerifyError translates go-oidc verification errors into user-friendly messages.
+// NOTE: go-oidc does not export typed errors for issuer/audience mismatches,
+// so we fall back to string matching. If go-oidc changes its error wording in
+// a future release, these cases may stop matching and fall through to the
+// default "invalid token" branch. Re-check after upgrading go-oidc.
 func classifyVerifyError(err error) error {
 	var expiredErr *oidc.TokenExpiredError
 	if errors.As(err, &expiredErr) {

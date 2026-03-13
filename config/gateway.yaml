@@ -12,8 +12,10 @@ logging:
 cors:
   allowed_origins: ["${CORS_ALLOWED_ORIGIN}"]
   allowed_methods: ["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"]
-  allowed_headers: ["Authorization", "Content-Type", "X-API-Key", "X-Request-ID"]
-  exposed_headers: ["X-Request-ID", "X-RateLimit-Remaining", "X-RateLimit-Reset"]
+  allowed_headers:
+    ["Authorization", "Content-Type", "X-API-Key", "X-Request-ID"]
+  exposed_headers:
+    ["X-Request-ID", "X-RateLimit-Remaining", "X-RateLimit-Reset"]
   allow_credentials: true
   max_age: 3600
 
@@ -32,5 +34,33 @@ auth_providers:
       algorithm: "HS256"
       issuer: "${JWT_ISSUER}"
       audience: "${JWT_AUDIENCE}"
+  better-auth:
+    type: "oidc"
+    oidc:
+      issuer_url: "http://localhost:4000"
+      audience: "api"
+      allowed_algorithms: # Default: ["RS256"]
+        - "EdDSA"
 
-routes: []
+routes:
+  - name: "factura"
+    match:
+      path_regex: "^/factura(?P<path>/.*)?$"
+      methods: ["GET", "POST", "PUT", "DELETE", "PATCH"]
+    auth:
+      provider: "better-auth"
+    upstream:
+      url: "http://localhost:5152"
+      path_rewrite: "{path}"
+      timeout: 10s
+
+  - name: "public-api"
+    match:
+      path_regex: "^/public(?P<path>/.*)?$"
+      methods: ["GET"]
+    auth:
+      provider: "jwt_default"
+    upstream:
+      url: "http://public-service:3000"
+      path_rewrite: "/api{path}"
+      timeout: 10s

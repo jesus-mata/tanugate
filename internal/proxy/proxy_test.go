@@ -91,7 +91,7 @@ func TestProxy_PathRewrite(t *testing.T) {
 		Name: "test-rewrite",
 		Upstream: config.UpstreamConfig{
 			URL:         upstream.URL,
-			PathRewrite: "/internal/users/${id}",
+			PathRewrite: "/internal/users/{id}",
 			Timeout:     5 * time.Second,
 		},
 	}
@@ -126,7 +126,7 @@ func TestProxy_PathRewriteMultipleParams(t *testing.T) {
 		Name: "test-rewrite-multi",
 		Upstream: config.UpstreamConfig{
 			URL:         upstream.URL,
-			PathRewrite: "/api/${resource}/${id}",
+			PathRewrite: "/api/{resource}/{id}",
 			Timeout:     5 * time.Second,
 		},
 	}

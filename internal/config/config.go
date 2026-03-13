@@ -126,9 +126,10 @@ type UpstreamConfig struct {
 	Timeout     time.Duration `yaml:"timeout"`
 }
 
-// RouteAuthConfig selects the authentication provider for a route.
+// RouteAuthConfig selects the authentication providers for a route.
+// Providers are tried in order; the first to succeed authenticates the request.
 type RouteAuthConfig struct {
-	Provider string `yaml:"provider"`
+	Providers []string `yaml:"providers"`
 }
 
 // RouteLimitConfig holds per-route rate-limiting settings.

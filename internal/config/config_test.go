@@ -63,7 +63,8 @@ routes:
       path_rewrite: "/v1/users"
       timeout: 15s
     auth:
-      provider: "main_jwt"
+      providers:
+        - "main_jwt"
     rate_limit:
       requests_per_window: 100
       window: 1m
@@ -247,8 +248,8 @@ routes:
 	if route.Auth == nil {
 		t.Fatal("Route.Auth is nil, want non-nil")
 	}
-	if route.Auth.Provider != "main_jwt" {
-		t.Errorf("Route.Auth.Provider = %q, want %q", route.Auth.Provider, "main_jwt")
+	if len(route.Auth.Providers) != 1 || route.Auth.Providers[0] != "main_jwt" {
+		t.Errorf("Route.Auth.Providers = %v, want [main_jwt]", route.Auth.Providers)
 	}
 
 	// Route RateLimit

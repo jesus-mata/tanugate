@@ -19,9 +19,10 @@ type Authenticator interface {
 
 // AuthResult carries identity information extracted during authentication.
 type AuthResult struct {
-	Subject string         // User/client identifier
-	Claims  map[string]any // All claims (JWT/OIDC) or metadata
-	Name    string         // Human-readable name (API key)
+	Subject  string         // User/client identifier
+	Claims   map[string]any // All claims (JWT/OIDC) or metadata
+	Name     string         // Human-readable name (API key)
+	Provider string         // Name of the provider that authenticated the request
 }
 
 type authResultKey struct{}
@@ -71,26 +72,36 @@ func Middleware(authenticators map[string]Authenticator) middleware.Middleware {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			mr := router.RouteFromContext(r.Context())
-			if mr == nil || mr.Config.Auth == nil || mr.Config.Auth.Provider == "" || mr.Config.Auth.Provider == "none" {
+			if mr == nil || mr.Config.Auth == nil || len(mr.Config.Auth.Providers) == 0 {
 				next.ServeHTTP(w, r)
 				return
 			}
 
-			providerName := mr.Config.Auth.Provider
-			authn, ok := authenticators[providerName]
-			if !ok {
-				writeError(w, http.StatusInternalServerError, "misconfigured auth provider")
+			providers := mr.Config.Auth.Providers
+			if len(providers) == 1 && providers[0] == "none" {
+				next.ServeHTTP(w, r)
 				return
 			}
 
-			result, err := authn.Authenticate(r)
-			if err != nil {
-				writeError(w, http.StatusUnauthorized, err.Error())
+			for _, name := range providers {
+				authn, ok := authenticators[name]
+				if !ok {
+					writeError(w, http.StatusInternalServerError, "misconfigured auth provider")
+					return
+				}
+
+				result, err := authn.Authenticate(r)
+				if err != nil {
+					continue
+				}
+
+				result.Provider = name
+				ctx := WithAuthResult(r.Context(), result)
+				next.ServeHTTP(w, r.WithContext(ctx))
 				return
 			}
 
-			ctx := WithAuthResult(r.Context(), result)
-			next.ServeHTTP(w, r.WithContext(ctx))
+			writeError(w, http.StatusUnauthorized, "authentication failed")
 		})
 	}
 }

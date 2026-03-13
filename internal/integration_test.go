@@ -157,7 +157,7 @@ func newTestGateway(t *testing.T) *testGateway {
 				PathRewrite: "/internal/jwt/{rest}",
 				Timeout:     5 * time.Second,
 			},
-			Auth: &config.RouteAuthConfig{Provider: "jwt_default"},
+			Auth: &config.RouteAuthConfig{Providers: []string{"jwt_default"}},
 			RateLimit: &config.RouteLimitConfig{
 				RequestsPerWindow: 5,
 				Window:            60 * time.Second,
@@ -189,7 +189,7 @@ func newTestGateway(t *testing.T) *testGateway {
 				PathRewrite: "/internal/key/{rest}",
 				Timeout:     5 * time.Second,
 			},
-			Auth: &config.RouteAuthConfig{Provider: "apikey_svc1"},
+			Auth: &config.RouteAuthConfig{Providers: []string{"apikey_svc1"}},
 			Transform: &config.TransformConfig{
 				Request: &config.DirectionTransform{
 					Body: &config.BodyTransform{
@@ -434,8 +434,8 @@ func TestIntegration_AuthJWTExpired(t *testing.T) {
 	}
 	body := decodeJSON(t, rr)
 	msg, _ := body["message"].(string)
-	if !strings.Contains(msg, "expired") {
-		t.Errorf("expected 'expired' in message, got %q", msg)
+	if msg != "authentication failed" {
+		t.Errorf("expected 'authentication failed' message, got %q", msg)
 	}
 }
 

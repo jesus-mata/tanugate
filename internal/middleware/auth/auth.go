@@ -4,7 +4,9 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"net/http"
+	"strings"
 
 	"github.com/NextSolutionCUU/api-gateway/internal/config"
 	"github.com/NextSolutionCUU/api-gateway/internal/middleware"
@@ -83,15 +85,18 @@ func Middleware(authenticators map[string]Authenticator) middleware.Middleware {
 				return
 			}
 
+			var authErrors []string
 			for _, name := range providers {
 				authn, ok := authenticators[name]
 				if !ok {
+					slog.Error("auth provider not found", "provider", name, "route", mr.Config.Name)
 					writeError(w, http.StatusInternalServerError, "misconfigured auth provider")
 					return
 				}
 
 				result, err := authn.Authenticate(r)
 				if err != nil {
+					authErrors = append(authErrors, fmt.Sprintf("%s: %s", name, err.Error()))
 					continue
 				}
 
@@ -101,6 +106,11 @@ func Middleware(authenticators map[string]Authenticator) middleware.Middleware {
 				return
 			}
 
+			slog.Warn("all auth providers failed",
+				"route", mr.Config.Name,
+				"providers", strings.Join(providers, ","),
+				"errors", strings.Join(authErrors, "; "),
+			)
 			writeError(w, http.StatusUnauthorized, "authentication failed")
 		})
 	}

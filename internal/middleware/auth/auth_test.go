@@ -1,10 +1,13 @@
 package auth
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/NextSolutionCUU/api-gateway/internal/config"
@@ -377,5 +380,47 @@ func TestMiddleware_EmptyProvidersList(t *testing.T) {
 
 	if !called {
 		t.Fatal("next handler was not called for empty providers list")
+	}
+}
+
+func TestMiddleware_AllFailLogsErrors(t *testing.T) {
+	var buf bytes.Buffer
+	logger := slog.New(slog.NewJSONHandler(&buf, &slog.HandlerOptions{Level: slog.LevelWarn}))
+	orig := slog.Default()
+	slog.SetDefault(logger)
+	defer slog.SetDefault(orig)
+
+	first := &mockAuthenticator{err: errUnauthorized}
+	second := &mockAuthenticator{err: errUnauthorized}
+
+	next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Fatal("next should not be called")
+	})
+
+	mw := Middleware(map[string]Authenticator{"first": first, "second": second})
+	handler := mw(next)
+
+	r := httptest.NewRequest(http.MethodGet, "/test", nil)
+	ctx := router.WithMatchedRoute(r.Context(), &router.MatchedRoute{
+		Config: &config.RouteConfig{
+			Name: "test-route",
+			Auth: &config.RouteAuthConfig{Providers: []string{"first", "second"}},
+		},
+	})
+	r = r.WithContext(ctx)
+
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, r)
+
+	if w.Code != http.StatusUnauthorized {
+		t.Fatalf("expected 401, got %d", w.Code)
+	}
+
+	logged := buf.String()
+	if !strings.Contains(logged, "all auth providers failed") {
+		t.Fatalf("expected warn log with 'all auth providers failed', got: %s", logged)
+	}
+	if !strings.Contains(logged, "test-route") {
+		t.Fatalf("expected log to contain route name, got: %s", logged)
 	}
 }

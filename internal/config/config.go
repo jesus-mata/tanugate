@@ -5,6 +5,7 @@ import (
 	"log/slog"
 	"os"
 	"regexp"
+	"strings"
 	"time"
 
 	"gopkg.in/yaml.v3"
@@ -212,6 +213,10 @@ func LoadConfig(path string) (*GatewayConfig, error) {
 
 	applyDefaults(&cfg)
 
+	if err := cfg.Validate(); err != nil {
+		return nil, err
+	}
+
 	return &cfg, nil
 }
 
@@ -247,4 +252,46 @@ func applyDefaults(cfg *GatewayConfig) {
 			cfg.Routes[i].Upstream.Timeout = 30 * time.Second
 		}
 	}
+}
+
+// Validate checks the configuration for common mistakes that would otherwise
+// only surface at request time. It returns an error describing all problems
+// found, or nil when the configuration is valid.
+func (cfg *GatewayConfig) Validate() error {
+	var errs []string
+
+	for _, route := range cfg.Routes {
+		if route.Auth == nil {
+			continue
+		}
+		providers := route.Auth.Providers
+		seen := make(map[string]bool, len(providers))
+
+		for _, p := range providers {
+			if p == "" {
+				errs = append(errs, fmt.Sprintf("route %q: provider name is empty", route.Name))
+				continue
+			}
+			if seen[p] {
+				errs = append(errs, fmt.Sprintf("route %q: duplicate provider %q", route.Name, p))
+				continue
+			}
+			seen[p] = true
+
+			if p != "none" {
+				if _, ok := cfg.AuthProviders[p]; !ok {
+					errs = append(errs, fmt.Sprintf("route %q: provider %q not defined in auth_providers", route.Name, p))
+				}
+			}
+		}
+
+		if seen["none"] && len(providers) > 1 {
+			errs = append(errs, fmt.Sprintf("route %q: \"none\" cannot be combined with other providers", route.Name))
+		}
+	}
+
+	if len(errs) > 0 {
+		return fmt.Errorf("config validation failed: %s", strings.Join(errs, "; "))
+	}
+	return nil
 }

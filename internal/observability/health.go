@@ -6,7 +6,7 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/NextSolutionCUU/api-gateway/internal/config"
+	"github.com/jesus-mata/tanugate/internal/config"
 )
 
 // HealthChecker is implemented by backends that can report their health.

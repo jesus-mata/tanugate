@@ -6,7 +6,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/NextSolutionCUU/api-gateway/internal/config"
+	"github.com/jesus-mata/tanugate/internal/config"
 )
 
 // State represents the current state of a circuit breaker.

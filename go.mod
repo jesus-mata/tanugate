@@ -1,4 +1,4 @@
-module github.com/NextSolutionCUU/api-gateway
+module github.com/jesus-mata/tanugate
 
 go 1.25.0
 

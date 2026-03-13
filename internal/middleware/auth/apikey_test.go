@@ -5,7 +5,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"github.com/NextSolutionCUU/api-gateway/internal/config"
+	"github.com/jesus-mata/tanugate/internal/config"
 )
 
 func newAPIKeyAuth(keys ...config.APIKeyEntry) *APIKeyAuthenticator {

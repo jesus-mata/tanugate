@@ -8,8 +8,8 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"github.com/NextSolutionCUU/api-gateway/internal/config"
-	"github.com/NextSolutionCUU/api-gateway/internal/observability"
+	"github.com/jesus-mata/tanugate/internal/config"
+	"github.com/jesus-mata/tanugate/internal/observability"
 )
 
 type mockChecker struct {

@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/NextSolutionCUU/api-gateway/internal/config"
+	"github.com/jesus-mata/tanugate/internal/config"
 )
 
 func defaultCfg() *config.CircuitBreakerConfig {

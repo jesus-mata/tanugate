@@ -6,7 +6,7 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/NextSolutionCUU/api-gateway/internal/config"
+	"github.com/jesus-mata/tanugate/internal/config"
 )
 
 // corsOverrideMarker is an internal response header used to signal that a

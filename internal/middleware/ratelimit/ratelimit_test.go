@@ -10,9 +10,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/NextSolutionCUU/api-gateway/internal/config"
-	"github.com/NextSolutionCUU/api-gateway/internal/observability"
-	"github.com/NextSolutionCUU/api-gateway/internal/router"
+	"github.com/jesus-mata/tanugate/internal/config"
+	"github.com/jesus-mata/tanugate/internal/observability"
+	"github.com/jesus-mata/tanugate/internal/router"
 	"github.com/prometheus/client_golang/prometheus"
 )
 

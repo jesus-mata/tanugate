@@ -29,7 +29,7 @@ api-gateway/
 ### 0.2 Initialize the Go module
 
 ```bash
-go mod init github.com/NextSolutionCUU/api-gateway
+go mod init github.com/jesus-mata/tanugate
 ```
 
 ### 0.3 Add the sole external dependency

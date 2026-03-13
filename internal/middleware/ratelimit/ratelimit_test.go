@@ -14,6 +14,7 @@ import (
 	"github.com/NextSolutionCUU/api-gateway/internal/observability"
 	"github.com/NextSolutionCUU/api-gateway/internal/router"
 	"github.com/prometheus/client_golang/prometheus"
+	dto "github.com/prometheus/client_model/go"
 )
 
 // mockLimiter implements Limiter for testing.
@@ -290,6 +291,32 @@ func TestKeyExtract_IP_AllTrusted(t *testing.T) {
 	}
 }
 
+func TestKeyExtract_IP_IPv6Normalization(t *testing.T) {
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.RemoteAddr = "[0:0:0:0:0:0:0:1]:12345"
+
+	key := extractKey(req, "ip", nil)
+	if key != "::1" {
+		t.Fatalf("expected normalized ::1, got %s", key)
+	}
+}
+
+func TestKeyExtract_IP_IPv6NormalizationXFF(t *testing.T) {
+	trusted, err := ParseTrustedProxies([]string{"192.168.1.0/24"})
+	if err != nil {
+		t.Fatalf("ParseTrustedProxies error: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.RemoteAddr = "192.168.1.50:12345"
+	req.Header.Set("X-Forwarded-For", "2001:0db8:0000:0000:0000:0000:0000:0001")
+
+	key := extractKey(req, "ip", trusted)
+	if key != "2001:db8::1" {
+		t.Fatalf("expected normalized 2001:db8::1, got %s", key)
+	}
+}
+
 func TestKeyExtract_Header(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
 	req.RemoteAddr = "1.2.3.4:1234"
@@ -313,9 +340,10 @@ func TestKeyExtract_Header_Missing(t *testing.T) {
 
 func TestRateLimit_LimiterError_FailOpen(t *testing.T) {
 	ml := &mockLimiter{err: errors.New("redis connection refused")}
+	metrics := newTestMetrics()
 
 	called := false
-	handler := RateLimit(ml, nil, nil)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	handler := RateLimit(ml, metrics, nil)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		called = true
 		w.WriteHeader(http.StatusOK)
 	}))
@@ -338,6 +366,15 @@ func TestRateLimit_LimiterError_FailOpen(t *testing.T) {
 	}
 	if rec.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d", rec.Code)
+	}
+
+	// Verify the error metric was incremented.
+	var m dto.Metric
+	if err := metrics.RateLimitErrors.WithLabelValues("svc").Write(&m); err != nil {
+		t.Fatalf("write metric: %v", err)
+	}
+	if v := m.GetCounter().GetValue(); v != 1 {
+		t.Fatalf("expected RateLimitErrors=1, got %v", v)
 	}
 }
 

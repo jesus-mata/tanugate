@@ -200,6 +200,7 @@ func TestMetrics_AllDescriptorsRegistered(t *testing.T) {
 		"gateway_response_size_bytes":       false,
 		"gateway_circuit_breaker_state":     false,
 		"gateway_rate_limit_rejected_total": false,
+		"gateway_rate_limit_errors_total":   false,
 		"gateway_upstream_errors_total":     false,
 	}
 
@@ -211,6 +212,7 @@ func TestMetrics_AllDescriptorsRegistered(t *testing.T) {
 		m.ResponseSize,
 		m.CircuitBreakerState,
 		m.RateLimitRejected,
+		m.RateLimitErrors,
 		m.UpstreamErrors,
 	}
 

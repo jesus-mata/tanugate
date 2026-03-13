@@ -2,14 +2,26 @@ package ratelimit
 
 import (
 	"context"
+	"log/slog"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
 const (
-	cleanupInterval = 60 * time.Second
-	evictionTTL     = 5 * time.Minute
+	cleanupInterval   = 60 * time.Second
+	evictionTTL       = 5 * time.Minute
+	defaultMaxBuckets = 100_000
 )
+
+// Option configures a MemoryLimiter.
+type Option func(*MemoryLimiter)
+
+// WithMaxBuckets sets the maximum number of rate-limit buckets. When the cap
+// is reached, new keys are rejected (fail-closed) to prevent memory exhaustion.
+func WithMaxBuckets(n int) Option {
+	return func(ml *MemoryLimiter) { ml.maxBuckets = n }
+}
 
 // bucket holds the token state for a single rate-limit key.
 type bucket struct {
@@ -25,15 +37,21 @@ type bucket struct {
 // bucket algorithm. Each unique key gets its own bucket. A background
 // goroutine evicts idle buckets periodically.
 type MemoryLimiter struct {
-	buckets sync.Map // key → *bucket
-	now     func() time.Time
+	buckets    sync.Map // key → *bucket
+	count      atomic.Int64
+	maxBuckets int
+	now        func() time.Time
 }
 
 // NewMemoryLimiter creates a MemoryLimiter and starts a background cleanup
 // goroutine that stops when ctx is cancelled.
-func NewMemoryLimiter(ctx context.Context) *MemoryLimiter {
+func NewMemoryLimiter(ctx context.Context, opts ...Option) *MemoryLimiter {
 	ml := &MemoryLimiter{
-		now: time.Now,
+		maxBuckets: defaultMaxBuckets,
+		now:        time.Now,
+	}
+	for _, o := range opts {
+		o(ml)
 	}
 	go ml.cleanup(ctx)
 	return ml
@@ -46,14 +64,29 @@ func (ml *MemoryLimiter) Allow(_ context.Context, key string, limit int, window 
 	now := ml.now()
 	refillRate := float64(limit) / window.Seconds()
 
-	val, _ := ml.buckets.LoadOrStore(key, &bucket{
-		tokens:     float64(limit),
-		maxTokens:  float64(limit),
-		refillRate: refillRate,
-		lastRefill: now,
-		lastAccess: now,
-	})
-	b := val.(*bucket)
+	var b *bucket
+	if val, ok := ml.buckets.Load(key); ok {
+		// Fast path: existing key (no allocation).
+		b = val.(*bucket)
+	} else {
+		// Check cap before creating a new bucket.
+		if ml.count.Load() >= int64(ml.maxBuckets) {
+			slog.Warn("rate limiter bucket cap reached, rejecting new key",
+				"key", key, "max_buckets", ml.maxBuckets)
+			return false, 0, now.Add(window), nil
+		}
+		val, loaded := ml.buckets.LoadOrStore(key, &bucket{
+			tokens:     float64(limit),
+			maxTokens:  float64(limit),
+			refillRate: refillRate,
+			lastRefill: now,
+			lastAccess: now,
+		})
+		b = val.(*bucket)
+		if !loaded {
+			ml.count.Add(1)
+		}
+	}
 
 	b.mu.Lock()
 	defer b.mu.Unlock()
@@ -109,6 +142,7 @@ func (ml *MemoryLimiter) evictStale() {
 		b.mu.Unlock()
 		if idle {
 			ml.buckets.Delete(key)
+			ml.count.Add(-1)
 		}
 		return true
 	})

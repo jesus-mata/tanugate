@@ -78,6 +78,9 @@ func RateLimit(limiter Limiter, metrics *observability.MetricsCollector, trusted
 					"key", compositeKey,
 					"error", err,
 				)
+				if metrics != nil {
+					metrics.RateLimitErrors.WithLabelValues(mr.Config.Name).Inc()
+				}
 				next.ServeHTTP(w, r)
 				return
 			}
@@ -105,6 +108,9 @@ func RateLimit(limiter Limiter, metrics *observability.MetricsCollector, trusted
 				return
 			}
 
+			if metrics != nil {
+				metrics.RateLimitAllowed.WithLabelValues(mr.Config.Name).Inc()
+			}
 			next.ServeHTTP(w, r)
 		})
 	}
@@ -170,20 +176,31 @@ func extractIP(r *http.Request, trustedProxies []*net.IPNet) string {
 			continue
 		}
 		if !isTrusted(ip, trustedProxies) {
-			return candidate
+			return ip.String()
 		}
 	}
 
 	return addr
 }
 
-// remoteAddrIP extracts the IP portion from r.RemoteAddr (host:port).
+// remoteAddrIP extracts the IP portion from r.RemoteAddr (host:port) and
+// normalizes it to its canonical string form.
 func remoteAddrIP(r *http.Request) string {
 	host, _, err := net.SplitHostPort(r.RemoteAddr)
 	if err != nil {
-		return r.RemoteAddr
+		return normalizeIP(r.RemoteAddr)
 	}
-	return host
+	return normalizeIP(host)
+}
+
+// normalizeIP parses and re-serializes an IP address so that equivalent
+// representations (e.g. "0:0:0:0:0:0:0:1" vs "::1") produce the same string.
+func normalizeIP(addr string) string {
+	ip := net.ParseIP(addr)
+	if ip == nil {
+		return addr
+	}
+	return ip.String()
 }
 
 // isTrusted reports whether ip falls within any of the given networks.

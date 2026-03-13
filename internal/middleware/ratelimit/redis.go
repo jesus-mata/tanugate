@@ -2,12 +2,35 @@ package ratelimit
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
+	"fmt"
+	"io"
+	"os"
+	"sync/atomic"
 	"time"
 
 	"github.com/NextSolutionCUU/api-gateway/internal/config"
-	"github.com/google/uuid"
 	"github.com/redis/go-redis/v9"
 )
+
+// counter provides a cheap, process-unique monotonic ID for sorted set members,
+// avoiding the crypto/rand overhead and memory cost of UUID v4.
+var counter atomic.Int64
+
+// instancePrefix uniquely identifies this gateway instance so that sorted-set
+// members from different instances never collide.
+var instancePrefix string
+
+func init() {
+	host, err := os.Hostname()
+	if err != nil {
+		b := make([]byte, 8)
+		io.ReadFull(rand.Reader, b)
+		host = hex.EncodeToString(b)
+	}
+	instancePrefix = fmt.Sprintf("%s:%d", host, os.Getpid())
+}
 
 // slidingWindowScript is a Lua script implementing a sliding window rate
 // limiter using a sorted set. It atomically trims expired entries, checks the
@@ -43,9 +66,15 @@ type RedisLimiter struct {
 // described by cfg.
 func NewRedisLimiter(cfg *config.RedisConfig) *RedisLimiter {
 	client := redis.NewClient(&redis.Options{
-		Addr:     cfg.Addr,
-		Password: cfg.Password,
-		DB:       cfg.DB,
+		Addr:         cfg.Addr,
+		Password:     cfg.Password,
+		DB:           cfg.DB,
+		PoolSize:     cfg.PoolSize,
+		MinIdleConns: cfg.MinIdleConns,
+		DialTimeout:  cfg.DialTimeout,
+		ReadTimeout:  cfg.ReadTimeout,
+		WriteTimeout: cfg.WriteTimeout,
+		MaxRetries:   cfg.MaxRetries,
 	})
 	return &RedisLimiter{client: client}
 }
@@ -56,7 +85,7 @@ func (rl *RedisLimiter) Allow(ctx context.Context, key string, limit int, window
 	nowMs := time.Now().UnixMilli()
 	windowMs := window.Milliseconds()
 
-	member := uuid.New().String()
+	member := fmt.Sprintf("%s:%d:%d", instancePrefix, nowMs, counter.Add(1))
 	result, err := slidingWindowScript.Run(ctx, rl.client, []string{key}, windowMs, limit, nowMs, member).Int64Slice()
 	if err != nil {
 		return false, 0, time.Time{}, err

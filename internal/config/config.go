@@ -54,9 +54,15 @@ type RateLimitGlobalConfig struct {
 
 // RedisConfig holds Redis connection settings.
 type RedisConfig struct {
-	Addr     string `yaml:"addr"`
-	Password string `yaml:"password"`
-	DB       int    `yaml:"db"`
+	Addr         string        `yaml:"addr"`
+	Password     string        `yaml:"password"`
+	DB           int           `yaml:"db"`
+	PoolSize     int           `yaml:"pool_size"`
+	MinIdleConns int           `yaml:"min_idle_conns"`
+	DialTimeout  time.Duration `yaml:"dial_timeout"`
+	ReadTimeout  time.Duration `yaml:"read_timeout"`
+	WriteTimeout time.Duration `yaml:"write_timeout"`
+	MaxRetries   int           `yaml:"max_retries"`
 }
 
 // AuthProvider describes a single authentication provider.
@@ -239,6 +245,26 @@ func applyDefaults(cfg *GatewayConfig) {
 	}
 	if cfg.RateLimit.Backend == "" {
 		cfg.RateLimit.Backend = "memory"
+	}
+	if cfg.RateLimit.Redis != nil {
+		if cfg.RateLimit.Redis.PoolSize == 0 {
+			cfg.RateLimit.Redis.PoolSize = 10
+		}
+		if cfg.RateLimit.Redis.MinIdleConns == 0 {
+			cfg.RateLimit.Redis.MinIdleConns = 2
+		}
+		if cfg.RateLimit.Redis.DialTimeout == 0 {
+			cfg.RateLimit.Redis.DialTimeout = 5 * time.Second
+		}
+		if cfg.RateLimit.Redis.ReadTimeout == 0 {
+			cfg.RateLimit.Redis.ReadTimeout = 3 * time.Second
+		}
+		if cfg.RateLimit.Redis.WriteTimeout == 0 {
+			cfg.RateLimit.Redis.WriteTimeout = 3 * time.Second
+		}
+		if cfg.RateLimit.Redis.MaxRetries == 0 {
+			cfg.RateLimit.Redis.MaxRetries = 3
+		}
 	}
 
 	for i := range cfg.Routes {

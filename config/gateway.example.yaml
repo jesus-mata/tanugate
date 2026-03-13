@@ -70,6 +70,12 @@ rate_limit:
     addr: "${REDIS_ADDR}"       # e.g. "redis:6379"
     password: "${REDIS_PASSWORD}"
     db: 0
+    # pool_size: 10             # Max connections in the pool (default: 10)
+    # min_idle_conns: 2         # Min idle connections kept open (default: 2)
+    # dial_timeout: 5s          # Timeout for establishing new connections (default: 5s)
+    # read_timeout: 3s          # Timeout for socket reads (default: 3s)
+    # write_timeout: 3s         # Timeout for socket writes (default: 3s)
+    # max_retries: 3            # Max retries on transient failures (default: 3)
 
 # -----------------------------------------------------------------------------
 # Auth Providers

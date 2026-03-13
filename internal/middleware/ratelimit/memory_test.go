@@ -2,6 +2,7 @@ package ratelimit
 
 import (
 	"context"
+	"fmt"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -230,5 +231,130 @@ func TestMemory_ContextCancellation(t *testing.T) {
 	allowed, _, _, _ = ml.Allow(context.Background(), "key", 10, time.Minute)
 	if !allowed {
 		t.Fatal("expected allowed after context cancellation")
+	}
+}
+
+func TestMemory_BucketCapRejectsNewKeys(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	cap := 5
+	ml := NewMemoryLimiter(ctx, WithMaxBuckets(cap))
+
+	// Fill all buckets.
+	for i := 0; i < cap; i++ {
+		allowed, _, _, err := ml.Allow(ctx, fmt.Sprintf("key-%d", i), 10, time.Minute)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if !allowed {
+			t.Fatalf("key-%d should be allowed", i)
+		}
+	}
+
+	// Next new key must be rejected.
+	allowed, remaining, _, err := ml.Allow(ctx, "new-key", 10, time.Minute)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if allowed {
+		t.Fatal("new key beyond cap should be rejected")
+	}
+	if remaining != 0 {
+		t.Fatalf("expected remaining=0, got %d", remaining)
+	}
+
+	// Existing keys should still work.
+	allowed, _, _, err = ml.Allow(ctx, "key-0", 10, time.Minute)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !allowed {
+		t.Fatal("existing key should still be allowed")
+	}
+}
+
+func TestMemory_BucketCapFreesAfterEviction(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	cap := 3
+	ml := NewMemoryLimiter(ctx, WithMaxBuckets(cap))
+
+	now := time.Now()
+	ml.now = func() time.Time { return now }
+
+	// Fill all buckets.
+	for i := 0; i < cap; i++ {
+		ml.Allow(ctx, fmt.Sprintf("key-%d", i), 10, time.Minute)
+	}
+
+	// Verify cap is hit.
+	allowed, _, _, _ := ml.Allow(ctx, "blocked-key", 10, time.Minute)
+	if allowed {
+		t.Fatal("should be rejected when cap is full")
+	}
+
+	// Advance past eviction TTL and evict.
+	ml.now = func() time.Time { return now.Add(evictionTTL + time.Second) }
+	ml.evictStale()
+
+	// New keys should be accepted again.
+	allowed, _, _, err := ml.Allow(ctx, "fresh-key", 10, time.Minute)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !allowed {
+		t.Fatal("new key should be allowed after eviction freed capacity")
+	}
+}
+
+func TestMemory_BucketCapConcurrent(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	cap := 10
+	ml := NewMemoryLimiter(ctx, WithMaxBuckets(cap))
+
+	goroutines := 100
+	var allowedCount atomic.Int32
+	var wg sync.WaitGroup
+
+	wg.Add(goroutines)
+	for i := 0; i < goroutines; i++ {
+		go func(id int) {
+			defer wg.Done()
+			allowed, _, _, _ := ml.Allow(ctx, fmt.Sprintf("concurrent-%d", id), 10, time.Minute)
+			if allowed {
+				allowedCount.Add(1)
+			}
+		}(i)
+	}
+	wg.Wait()
+
+	got := int(allowedCount.Load())
+	// Due to the small race window between Load and LoadOrStore, count may
+	// slightly exceed cap (at most by GOMAXPROCS), but should be close.
+	if got > cap+runtime_GOMAXPROCS() {
+		t.Fatalf("expected at most ~%d allowed, got %d", cap, got)
+	}
+	if got < 1 {
+		t.Fatal("expected at least 1 allowed")
+	}
+}
+
+// runtime_GOMAXPROCS returns a reasonable upper bound for race slack.
+func runtime_GOMAXPROCS() int {
+	// In tests GOMAXPROCS is typically small; use a generous bound.
+	return 32
+}
+
+func TestMemory_DefaultMaxBuckets(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	ml := NewMemoryLimiter(ctx)
+	if ml.maxBuckets != defaultMaxBuckets {
+		t.Fatalf("expected default maxBuckets=%d, got %d", defaultMaxBuckets, ml.maxBuckets)
 	}
 }

@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -300,7 +301,7 @@ func newTestGateway(t *testing.T) *testGateway {
 		}
 
 		// Auth and rate-limit are per-route (router sets context before dispatch).
-		h = auth.Middleware(authenticators)(h)
+		h = auth.Middleware(slog.Default(), authenticators)(h)
 		h = ratelimit.RateLimit(limiter, metrics, nil)(h)
 
 		handlers[route.Name] = h

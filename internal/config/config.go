@@ -265,6 +265,10 @@ func (cfg *GatewayConfig) Validate() error {
 			continue
 		}
 		providers := route.Auth.Providers
+		if len(providers) == 0 {
+			errs = append(errs, fmt.Sprintf("route %q: auth is set but no providers are configured", route.Name))
+			continue
+		}
 		seen := make(map[string]bool, len(providers))
 
 		for _, p := range providers {

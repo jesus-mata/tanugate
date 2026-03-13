@@ -673,6 +673,32 @@ routes:
 	}
 }
 
+func TestValidate_EmptyProvidersSlice(t *testing.T) {
+	yaml := `
+auth_providers: {}
+routes:
+  - name: "test"
+    match:
+      path_regex: "^/test"
+    upstream:
+      url: "http://localhost:8080"
+    auth:
+      providers: []
+`
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "config.yaml")
+	if err := os.WriteFile(cfgPath, []byte(yaml), 0644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	_, err := LoadConfig(cfgPath)
+	if err == nil {
+		t.Fatal("expected error for empty providers slice")
+	}
+	if !strings.Contains(err.Error(), "no providers are configured") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
 func TestValidate_DuplicateProviderName(t *testing.T) {
 	yaml := `
 auth_providers:

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -13,6 +14,8 @@ import (
 	"github.com/NextSolutionCUU/api-gateway/internal/config"
 	"github.com/NextSolutionCUU/api-gateway/internal/router"
 )
+
+var discardLogger = slog.New(slog.NewTextHandler(io.Discard, nil))
 
 func TestNewAuthenticator_JWT(t *testing.T) {
 	provider := config.AuthProvider{
@@ -65,7 +68,7 @@ func TestMiddleware_SkipsNone(t *testing.T) {
 		w.WriteHeader(http.StatusOK)
 	})
 
-	mw := Middleware(nil)
+	mw := Middleware(discardLogger, nil)
 	handler := mw(next)
 
 	// Route with auth provider "none"
@@ -91,7 +94,7 @@ func TestMiddleware_SkipsNilAuth(t *testing.T) {
 		called = true
 	})
 
-	mw := Middleware(nil)
+	mw := Middleware(discardLogger, nil)
 	handler := mw(next)
 
 	r := httptest.NewRequest(http.MethodGet, "/test", nil)
@@ -118,7 +121,7 @@ func TestMiddleware_StoresAuthResult(t *testing.T) {
 		captured = ResultFromContext(r.Context())
 	})
 
-	mw := Middleware(map[string]Authenticator{"mock": mockAuth})
+	mw := Middleware(discardLogger, map[string]Authenticator{"mock": mockAuth})
 	handler := mw(next)
 
 	r := httptest.NewRequest(http.MethodGet, "/test", nil)
@@ -150,7 +153,7 @@ func TestMiddleware_Returns401(t *testing.T) {
 		t.Fatal("next should not be called")
 	})
 
-	mw := Middleware(map[string]Authenticator{"mock": mockAuth})
+	mw := Middleware(discardLogger, map[string]Authenticator{"mock": mockAuth})
 	handler := mw(next)
 
 	r := httptest.NewRequest(http.MethodGet, "/test", nil)
@@ -181,7 +184,7 @@ func TestMiddleware_MissingProvider(t *testing.T) {
 	})
 
 	// Empty authenticators map — provider "missing" doesn't exist.
-	mw := Middleware(map[string]Authenticator{})
+	mw := Middleware(discardLogger, map[string]Authenticator{})
 	handler := mw(next)
 
 	r := httptest.NewRequest(http.MethodGet, "/test", nil)
@@ -244,7 +247,7 @@ func TestMiddleware_MultipleProviders_FirstSucceeds(t *testing.T) {
 		captured = ResultFromContext(r.Context())
 	})
 
-	mw := Middleware(map[string]Authenticator{"first": first, "second": second})
+	mw := Middleware(discardLogger, map[string]Authenticator{"first": first, "second": second})
 	handler := mw(next)
 
 	r := httptest.NewRequest(http.MethodGet, "/test", nil)
@@ -278,7 +281,7 @@ func TestMiddleware_MultipleProviders_SecondSucceeds(t *testing.T) {
 		captured = ResultFromContext(r.Context())
 	})
 
-	mw := Middleware(map[string]Authenticator{"first": first, "second": second})
+	mw := Middleware(discardLogger, map[string]Authenticator{"first": first, "second": second})
 	handler := mw(next)
 
 	r := httptest.NewRequest(http.MethodGet, "/test", nil)
@@ -308,7 +311,7 @@ func TestMiddleware_MultipleProviders_AllFail(t *testing.T) {
 		t.Fatal("next should not be called")
 	})
 
-	mw := Middleware(map[string]Authenticator{"first": first, "second": second})
+	mw := Middleware(discardLogger, map[string]Authenticator{"first": first, "second": second})
 	handler := mw(next)
 
 	r := httptest.NewRequest(http.MethodGet, "/test", nil)
@@ -339,7 +342,7 @@ func TestMiddleware_MultipleProviders_MisconfiguredInMiddle(t *testing.T) {
 		t.Fatal("next should not be called")
 	})
 
-	mw := Middleware(map[string]Authenticator{"valid": valid})
+	mw := Middleware(discardLogger, map[string]Authenticator{"valid": valid})
 	handler := mw(next)
 
 	r := httptest.NewRequest(http.MethodGet, "/test", nil)
@@ -364,7 +367,7 @@ func TestMiddleware_EmptyProvidersList(t *testing.T) {
 		called = true
 	})
 
-	mw := Middleware(nil)
+	mw := Middleware(discardLogger, nil)
 	handler := mw(next)
 
 	r := httptest.NewRequest(http.MethodGet, "/test", nil)
@@ -386,9 +389,6 @@ func TestMiddleware_EmptyProvidersList(t *testing.T) {
 func TestMiddleware_AllFailLogsErrors(t *testing.T) {
 	var buf bytes.Buffer
 	logger := slog.New(slog.NewJSONHandler(&buf, &slog.HandlerOptions{Level: slog.LevelWarn}))
-	orig := slog.Default()
-	slog.SetDefault(logger)
-	defer slog.SetDefault(orig)
 
 	first := &mockAuthenticator{err: errUnauthorized}
 	second := &mockAuthenticator{err: errUnauthorized}
@@ -397,7 +397,7 @@ func TestMiddleware_AllFailLogsErrors(t *testing.T) {
 		t.Fatal("next should not be called")
 	})
 
-	mw := Middleware(map[string]Authenticator{"first": first, "second": second})
+	mw := Middleware(logger, map[string]Authenticator{"first": first, "second": second})
 	handler := mw(next)
 
 	r := httptest.NewRequest(http.MethodGet, "/test", nil)

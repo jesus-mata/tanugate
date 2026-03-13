@@ -70,7 +70,7 @@ func NewAuthenticator(provider config.AuthProvider) (Authenticator, error) {
 // the provided authenticator map. The map keys correspond to the provider
 // names defined in the gateway configuration. A provider name of "none"
 // bypasses authentication entirely.
-func Middleware(authenticators map[string]Authenticator) middleware.Middleware {
+func Middleware(logger *slog.Logger, authenticators map[string]Authenticator) middleware.Middleware {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			mr := router.RouteFromContext(r.Context())
@@ -89,7 +89,7 @@ func Middleware(authenticators map[string]Authenticator) middleware.Middleware {
 			for _, name := range providers {
 				authn, ok := authenticators[name]
 				if !ok {
-					slog.Error("auth provider not found", "provider", name, "route", mr.Config.Name)
+					logger.Error("auth provider not found", "provider", name, "route", mr.Config.Name)
 					writeError(w, http.StatusInternalServerError, "misconfigured auth provider")
 					return
 				}
@@ -106,7 +106,7 @@ func Middleware(authenticators map[string]Authenticator) middleware.Middleware {
 				return
 			}
 
-			slog.Warn("all auth providers failed",
+			logger.Warn("all auth providers failed",
 				"route", mr.Config.Name,
 				"providers", strings.Join(providers, ","),
 				"errors", strings.Join(authErrors, "; "),

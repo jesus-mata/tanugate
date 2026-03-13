@@ -122,7 +122,7 @@ func main() {
 
 		// Auth and rate-limit are per-route: the router sets route context
 		// before dispatching, so these middleware can read the matched route.
-		h = auth.Middleware(authenticators)(h)
+		h = auth.Middleware(logger, authenticators)(h)
 		h = ratelimit.RateLimit(limiter, metrics, trustedProxies)(h)
 
 		handlers[cfg.Routes[i].Name] = h

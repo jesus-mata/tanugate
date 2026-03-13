@@ -4,7 +4,9 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"net/http"
+	"strings"
 
 	"github.com/NextSolutionCUU/api-gateway/internal/config"
 	"github.com/NextSolutionCUU/api-gateway/internal/middleware"
@@ -19,9 +21,10 @@ type Authenticator interface {
 
 // AuthResult carries identity information extracted during authentication.
 type AuthResult struct {
-	Subject string         // User/client identifier
-	Claims  map[string]any // All claims (JWT/OIDC) or metadata
-	Name    string         // Human-readable name (API key)
+	Subject  string         // User/client identifier
+	Claims   map[string]any // All claims (JWT/OIDC) or metadata
+	Name     string         // Human-readable name (API key)
+	Provider string         // Name of the provider that authenticated the request
 }
 
 type authResultKey struct{}
@@ -67,30 +70,50 @@ func NewAuthenticator(provider config.AuthProvider) (Authenticator, error) {
 // the provided authenticator map. The map keys correspond to the provider
 // names defined in the gateway configuration. A provider name of "none"
 // bypasses authentication entirely.
-func Middleware(authenticators map[string]Authenticator) middleware.Middleware {
+func Middleware(logger *slog.Logger, authenticators map[string]Authenticator) middleware.Middleware {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			mr := router.RouteFromContext(r.Context())
-			if mr == nil || mr.Config.Auth == nil || mr.Config.Auth.Provider == "" || mr.Config.Auth.Provider == "none" {
+			if mr == nil || mr.Config.Auth == nil || len(mr.Config.Auth.Providers) == 0 {
 				next.ServeHTTP(w, r)
 				return
 			}
 
-			providerName := mr.Config.Auth.Provider
-			authn, ok := authenticators[providerName]
-			if !ok {
-				writeError(w, http.StatusInternalServerError, "misconfigured auth provider")
+			providers := mr.Config.Auth.Providers
+			// Invariant: config.Validate rejects "none" combined with other
+			// providers, so this check is sufficient.
+			if len(providers) == 1 && providers[0] == "none" {
+				next.ServeHTTP(w, r)
 				return
 			}
 
-			result, err := authn.Authenticate(r)
-			if err != nil {
-				writeError(w, http.StatusUnauthorized, err.Error())
+			var authErrors []string
+			for _, name := range providers {
+				authn, ok := authenticators[name]
+				if !ok {
+					logger.Error("auth provider not found", "provider", name, "route", mr.Config.Name)
+					writeError(w, http.StatusInternalServerError, "misconfigured auth provider")
+					return
+				}
+
+				result, err := authn.Authenticate(r)
+				if err != nil {
+					authErrors = append(authErrors, fmt.Sprintf("%s: %s", name, err.Error()))
+					continue
+				}
+
+				result.Provider = name
+				ctx := WithAuthResult(r.Context(), result)
+				next.ServeHTTP(w, r.WithContext(ctx))
 				return
 			}
 
-			ctx := WithAuthResult(r.Context(), result)
-			next.ServeHTTP(w, r.WithContext(ctx))
+			logger.Warn("all auth providers failed",
+				"route", mr.Config.Name,
+				"providers", strings.Join(providers, ","),
+				"errors", strings.Join(authErrors, "; "),
+			)
+			writeError(w, http.StatusUnauthorized, "authentication failed")
 		})
 	}
 }

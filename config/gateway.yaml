@@ -48,7 +48,8 @@ routes:
       path_regex: "^/factura(?P<path>/.*)?$"
       methods: ["GET", "POST", "PUT", "DELETE", "PATCH"]
     auth:
-      provider: "better-auth"
+      providers:
+        - "better-auth"
     upstream:
       url: "http://localhost:5152"
       path_rewrite: "{path}"
@@ -59,7 +60,8 @@ routes:
       path_regex: "^/public(?P<path>/.*)?$"
       methods: ["GET"]
     auth:
-      provider: "jwt_default"
+      providers:
+        - "jwt_default"
     upstream:
       url: "http://public-service:3000"
       path_rewrite: "/api{path}"

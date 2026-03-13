@@ -73,7 +73,7 @@ rate_limit:
 
 # -----------------------------------------------------------------------------
 # Auth Providers
-# Each provider is referenced by name in route.auth.provider.
+# Each provider is referenced by name in route.auth.providers.
 # Supported types: jwt, apikey, oidc
 # -----------------------------------------------------------------------------
 auth_providers:
@@ -145,7 +145,8 @@ routes:
       path_rewrite: "/internal/users{path}"
       timeout: 30s
     auth:
-      provider: "jwt_default"
+      providers:              # Tried in order; first success wins
+        - "jwt_default"
     rate_limit:
       requests: 100               # Max requests per window
       window: 60s                  # Window duration
@@ -192,7 +193,8 @@ routes:
       path_rewrite: "/internal/orders{path}"
       timeout: 30s
     auth:
-      provider: "apikey_svc1"
+      providers:
+        - "apikey_svc1"
     rate_limit:
       requests: 50
       window: 60s

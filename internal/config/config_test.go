@@ -3,6 +3,7 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -63,7 +64,8 @@ routes:
       path_rewrite: "/v1/users"
       timeout: 15s
     auth:
-      provider: "main_jwt"
+      providers:
+        - "main_jwt"
     rate_limit:
       requests_per_window: 100
       window: 1m
@@ -247,8 +249,8 @@ routes:
 	if route.Auth == nil {
 		t.Fatal("Route.Auth is nil, want non-nil")
 	}
-	if route.Auth.Provider != "main_jwt" {
-		t.Errorf("Route.Auth.Provider = %q, want %q", route.Auth.Provider, "main_jwt")
+	if len(route.Auth.Providers) != 1 || route.Auth.Providers[0] != "main_jwt" {
+		t.Errorf("Route.Auth.Providers = %v, want [main_jwt]", route.Auth.Providers)
 	}
 
 	// Route RateLimit
@@ -580,5 +582,150 @@ routes:
 	}
 	if cfg.Routes[0].Upstream.URL != "http://localhost:3000" {
 		t.Errorf("Upstream.URL = %q, want %q", cfg.Routes[0].Upstream.URL, "http://localhost:3000")
+	}
+}
+
+func TestValidate_NoneWithOtherProviders(t *testing.T) {
+	yaml := `
+auth_providers:
+  jwt_default:
+    type: "jwt"
+    jwt:
+      secret: "s"
+      algorithm: "HS256"
+routes:
+  - name: "test"
+    match:
+      path_regex: "^/test"
+    upstream:
+      url: "http://localhost:8080"
+    auth:
+      providers: ["jwt_default", "none"]
+`
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "config.yaml")
+	if err := os.WriteFile(cfgPath, []byte(yaml), 0644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	_, err := LoadConfig(cfgPath)
+	if err == nil {
+		t.Fatal("expected error for none combined with other providers")
+	}
+	if !strings.Contains(err.Error(), "\"none\" cannot be combined") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestValidate_UndefinedProvider(t *testing.T) {
+	yaml := `
+auth_providers: {}
+routes:
+  - name: "test"
+    match:
+      path_regex: "^/test"
+    upstream:
+      url: "http://localhost:8080"
+    auth:
+      providers: ["nonexistent"]
+`
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "config.yaml")
+	if err := os.WriteFile(cfgPath, []byte(yaml), 0644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	_, err := LoadConfig(cfgPath)
+	if err == nil {
+		t.Fatal("expected error for undefined provider")
+	}
+	if !strings.Contains(err.Error(), "not defined in auth_providers") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestValidate_EmptyProviderName(t *testing.T) {
+	yaml := `
+auth_providers:
+  jwt_default:
+    type: "jwt"
+    jwt:
+      secret: "s"
+      algorithm: "HS256"
+routes:
+  - name: "test"
+    match:
+      path_regex: "^/test"
+    upstream:
+      url: "http://localhost:8080"
+    auth:
+      providers: ["", "jwt_default"]
+`
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "config.yaml")
+	if err := os.WriteFile(cfgPath, []byte(yaml), 0644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	_, err := LoadConfig(cfgPath)
+	if err == nil {
+		t.Fatal("expected error for empty provider name")
+	}
+	if !strings.Contains(err.Error(), "is empty") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestValidate_EmptyProvidersSlice(t *testing.T) {
+	yaml := `
+auth_providers: {}
+routes:
+  - name: "test"
+    match:
+      path_regex: "^/test"
+    upstream:
+      url: "http://localhost:8080"
+    auth:
+      providers: []
+`
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "config.yaml")
+	if err := os.WriteFile(cfgPath, []byte(yaml), 0644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	_, err := LoadConfig(cfgPath)
+	if err == nil {
+		t.Fatal("expected error for empty providers slice")
+	}
+	if !strings.Contains(err.Error(), "no providers are configured") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestValidate_DuplicateProviderName(t *testing.T) {
+	yaml := `
+auth_providers:
+  jwt_default:
+    type: "jwt"
+    jwt:
+      secret: "s"
+      algorithm: "HS256"
+routes:
+  - name: "test"
+    match:
+      path_regex: "^/test"
+    upstream:
+      url: "http://localhost:8080"
+    auth:
+      providers: ["jwt_default", "jwt_default"]
+`
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "config.yaml")
+	if err := os.WriteFile(cfgPath, []byte(yaml), 0644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	_, err := LoadConfig(cfgPath)
+	if err == nil {
+		t.Fatal("expected error for duplicate provider name")
+	}
+	if !strings.Contains(err.Error(), "duplicate") {
+		t.Fatalf("unexpected error: %v", err)
 	}
 }

@@ -1,15 +1,21 @@
 package auth
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"io"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/NextSolutionCUU/api-gateway/internal/config"
 	"github.com/NextSolutionCUU/api-gateway/internal/router"
 )
+
+var discardLogger = slog.New(slog.NewTextHandler(io.Discard, nil))
 
 func TestNewAuthenticator_JWT(t *testing.T) {
 	provider := config.AuthProvider{
@@ -62,14 +68,14 @@ func TestMiddleware_SkipsNone(t *testing.T) {
 		w.WriteHeader(http.StatusOK)
 	})
 
-	mw := Middleware(nil)
+	mw := Middleware(discardLogger, nil)
 	handler := mw(next)
 
 	// Route with auth provider "none"
 	r := httptest.NewRequest(http.MethodGet, "/test", nil)
 	ctx := router.WithMatchedRoute(r.Context(), &router.MatchedRoute{
 		Config: &config.RouteConfig{
-			Auth: &config.RouteAuthConfig{Provider: "none"},
+			Auth: &config.RouteAuthConfig{Providers: []string{"none"}},
 		},
 	})
 	r = r.WithContext(ctx)
@@ -88,7 +94,7 @@ func TestMiddleware_SkipsNilAuth(t *testing.T) {
 		called = true
 	})
 
-	mw := Middleware(nil)
+	mw := Middleware(discardLogger, nil)
 	handler := mw(next)
 
 	r := httptest.NewRequest(http.MethodGet, "/test", nil)
@@ -115,13 +121,13 @@ func TestMiddleware_StoresAuthResult(t *testing.T) {
 		captured = ResultFromContext(r.Context())
 	})
 
-	mw := Middleware(map[string]Authenticator{"mock": mockAuth})
+	mw := Middleware(discardLogger, map[string]Authenticator{"mock": mockAuth})
 	handler := mw(next)
 
 	r := httptest.NewRequest(http.MethodGet, "/test", nil)
 	ctx := router.WithMatchedRoute(r.Context(), &router.MatchedRoute{
 		Config: &config.RouteConfig{
-			Auth: &config.RouteAuthConfig{Provider: "mock"},
+			Auth: &config.RouteAuthConfig{Providers: []string{"mock"}},
 		},
 	})
 	r = r.WithContext(ctx)
@@ -135,6 +141,9 @@ func TestMiddleware_StoresAuthResult(t *testing.T) {
 	if captured.Subject != "user-1" {
 		t.Fatalf("expected subject user-1, got %s", captured.Subject)
 	}
+	if captured.Provider != "mock" {
+		t.Fatalf("expected provider mock, got %s", captured.Provider)
+	}
 }
 
 func TestMiddleware_Returns401(t *testing.T) {
@@ -144,13 +153,13 @@ func TestMiddleware_Returns401(t *testing.T) {
 		t.Fatal("next should not be called")
 	})
 
-	mw := Middleware(map[string]Authenticator{"mock": mockAuth})
+	mw := Middleware(discardLogger, map[string]Authenticator{"mock": mockAuth})
 	handler := mw(next)
 
 	r := httptest.NewRequest(http.MethodGet, "/test", nil)
 	ctx := router.WithMatchedRoute(r.Context(), &router.MatchedRoute{
 		Config: &config.RouteConfig{
-			Auth: &config.RouteAuthConfig{Provider: "mock"},
+			Auth: &config.RouteAuthConfig{Providers: []string{"mock"}},
 		},
 	})
 	r = r.WithContext(ctx)
@@ -164,8 +173,8 @@ func TestMiddleware_Returns401(t *testing.T) {
 
 	var body map[string]string
 	json.NewDecoder(w.Body).Decode(&body)
-	if body["error"] != "unauthorized" {
-		t.Fatalf("expected error=unauthorized, got %s", body["error"])
+	if body["message"] != "authentication failed" {
+		t.Fatalf("expected message=authentication failed, got %s", body["message"])
 	}
 }
 
@@ -175,13 +184,13 @@ func TestMiddleware_MissingProvider(t *testing.T) {
 	})
 
 	// Empty authenticators map — provider "missing" doesn't exist.
-	mw := Middleware(map[string]Authenticator{})
+	mw := Middleware(discardLogger, map[string]Authenticator{})
 	handler := mw(next)
 
 	r := httptest.NewRequest(http.MethodGet, "/test", nil)
 	ctx := router.WithMatchedRoute(r.Context(), &router.MatchedRoute{
 		Config: &config.RouteConfig{
-			Auth: &config.RouteAuthConfig{Provider: "missing"},
+			Auth: &config.RouteAuthConfig{Providers: []string{"missing"}},
 		},
 	})
 	r = r.WithContext(ctx)
@@ -213,6 +222,7 @@ func TestContextHelpers(t *testing.T) {
 type mockAuthenticator struct {
 	result *AuthResult
 	err    error
+	called bool
 }
 
 var errUnauthorized = &authError{msg: "unauthorized"}
@@ -222,5 +232,195 @@ type authError struct{ msg string }
 func (e *authError) Error() string { return e.msg }
 
 func (m *mockAuthenticator) Authenticate(_ *http.Request) (*AuthResult, error) {
+	m.called = true
 	return m.result, m.err
+}
+
+// --- Multiple providers tests ---
+
+func TestMiddleware_MultipleProviders_FirstSucceeds(t *testing.T) {
+	first := &mockAuthenticator{result: &AuthResult{Subject: "user-1"}}
+	second := &mockAuthenticator{result: &AuthResult{Subject: "user-2"}}
+
+	var captured *AuthResult
+	next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		captured = ResultFromContext(r.Context())
+	})
+
+	mw := Middleware(discardLogger, map[string]Authenticator{"first": first, "second": second})
+	handler := mw(next)
+
+	r := httptest.NewRequest(http.MethodGet, "/test", nil)
+	ctx := router.WithMatchedRoute(r.Context(), &router.MatchedRoute{
+		Config: &config.RouteConfig{
+			Auth: &config.RouteAuthConfig{Providers: []string{"first", "second"}},
+		},
+	})
+	r = r.WithContext(ctx)
+
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, r)
+
+	if captured == nil || captured.Subject != "user-1" {
+		t.Fatal("expected first provider to authenticate")
+	}
+	if captured.Provider != "first" {
+		t.Fatalf("expected Provider=first, got %s", captured.Provider)
+	}
+	if second.called {
+		t.Fatal("second provider should not have been called")
+	}
+}
+
+func TestMiddleware_MultipleProviders_SecondSucceeds(t *testing.T) {
+	first := &mockAuthenticator{err: errUnauthorized}
+	second := &mockAuthenticator{result: &AuthResult{Subject: "user-2"}}
+
+	var captured *AuthResult
+	next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		captured = ResultFromContext(r.Context())
+	})
+
+	mw := Middleware(discardLogger, map[string]Authenticator{"first": first, "second": second})
+	handler := mw(next)
+
+	r := httptest.NewRequest(http.MethodGet, "/test", nil)
+	ctx := router.WithMatchedRoute(r.Context(), &router.MatchedRoute{
+		Config: &config.RouteConfig{
+			Auth: &config.RouteAuthConfig{Providers: []string{"first", "second"}},
+		},
+	})
+	r = r.WithContext(ctx)
+
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, r)
+
+	if captured == nil || captured.Subject != "user-2" {
+		t.Fatal("expected second provider to authenticate")
+	}
+	if captured.Provider != "second" {
+		t.Fatalf("expected Provider=second, got %s", captured.Provider)
+	}
+}
+
+func TestMiddleware_MultipleProviders_AllFail(t *testing.T) {
+	first := &mockAuthenticator{err: errUnauthorized}
+	second := &mockAuthenticator{err: errUnauthorized}
+
+	next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Fatal("next should not be called")
+	})
+
+	mw := Middleware(discardLogger, map[string]Authenticator{"first": first, "second": second})
+	handler := mw(next)
+
+	r := httptest.NewRequest(http.MethodGet, "/test", nil)
+	ctx := router.WithMatchedRoute(r.Context(), &router.MatchedRoute{
+		Config: &config.RouteConfig{
+			Auth: &config.RouteAuthConfig{Providers: []string{"first", "second"}},
+		},
+	})
+	r = r.WithContext(ctx)
+
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, r)
+
+	if w.Code != http.StatusUnauthorized {
+		t.Fatalf("expected 401, got %d", w.Code)
+	}
+	var body map[string]string
+	json.NewDecoder(w.Body).Decode(&body)
+	if body["message"] != "authentication failed" {
+		t.Fatalf("expected message=authentication failed, got %s", body["message"])
+	}
+}
+
+func TestMiddleware_MultipleProviders_MisconfiguredInMiddle(t *testing.T) {
+	valid := &mockAuthenticator{err: errUnauthorized}
+
+	next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Fatal("next should not be called")
+	})
+
+	mw := Middleware(discardLogger, map[string]Authenticator{"valid": valid})
+	handler := mw(next)
+
+	r := httptest.NewRequest(http.MethodGet, "/test", nil)
+	ctx := router.WithMatchedRoute(r.Context(), &router.MatchedRoute{
+		Config: &config.RouteConfig{
+			Auth: &config.RouteAuthConfig{Providers: []string{"valid", "missing"}},
+		},
+	})
+	r = r.WithContext(ctx)
+
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, r)
+
+	if w.Code != http.StatusInternalServerError {
+		t.Fatalf("expected 500, got %d", w.Code)
+	}
+}
+
+func TestMiddleware_EmptyProvidersList(t *testing.T) {
+	called := false
+	next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		called = true
+	})
+
+	mw := Middleware(discardLogger, nil)
+	handler := mw(next)
+
+	r := httptest.NewRequest(http.MethodGet, "/test", nil)
+	ctx := router.WithMatchedRoute(r.Context(), &router.MatchedRoute{
+		Config: &config.RouteConfig{
+			Auth: &config.RouteAuthConfig{Providers: []string{}},
+		},
+	})
+	r = r.WithContext(ctx)
+
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, r)
+
+	if !called {
+		t.Fatal("next handler was not called for empty providers list")
+	}
+}
+
+func TestMiddleware_AllFailLogsErrors(t *testing.T) {
+	var buf bytes.Buffer
+	logger := slog.New(slog.NewJSONHandler(&buf, &slog.HandlerOptions{Level: slog.LevelWarn}))
+
+	first := &mockAuthenticator{err: errUnauthorized}
+	second := &mockAuthenticator{err: errUnauthorized}
+
+	next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Fatal("next should not be called")
+	})
+
+	mw := Middleware(logger, map[string]Authenticator{"first": first, "second": second})
+	handler := mw(next)
+
+	r := httptest.NewRequest(http.MethodGet, "/test", nil)
+	ctx := router.WithMatchedRoute(r.Context(), &router.MatchedRoute{
+		Config: &config.RouteConfig{
+			Name: "test-route",
+			Auth: &config.RouteAuthConfig{Providers: []string{"first", "second"}},
+		},
+	})
+	r = r.WithContext(ctx)
+
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, r)
+
+	if w.Code != http.StatusUnauthorized {
+		t.Fatalf("expected 401, got %d", w.Code)
+	}
+
+	logged := buf.String()
+	if !strings.Contains(logged, "all auth providers failed") {
+		t.Fatalf("expected warn log with 'all auth providers failed', got: %s", logged)
+	}
+	if !strings.Contains(logged, "test-route") {
+		t.Fatalf("expected log to contain route name, got: %s", logged)
+	}
 }

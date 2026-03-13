@@ -5,8 +5,8 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/NextSolutionCUU/api-gateway/internal/middleware"
-	"github.com/NextSolutionCUU/api-gateway/internal/router"
+	"github.com/jesus-mata/tanugate/internal/middleware"
+	"github.com/jesus-mata/tanugate/internal/router"
 	"github.com/prometheus/client_golang/prometheus"
 )
 

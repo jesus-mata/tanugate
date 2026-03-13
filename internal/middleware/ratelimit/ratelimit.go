@@ -10,9 +10,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/NextSolutionCUU/api-gateway/internal/middleware"
-	"github.com/NextSolutionCUU/api-gateway/internal/observability"
-	"github.com/NextSolutionCUU/api-gateway/internal/router"
+	"github.com/jesus-mata/tanugate/internal/middleware"
+	"github.com/jesus-mata/tanugate/internal/observability"
+	"github.com/jesus-mata/tanugate/internal/router"
 )
 
 // Limiter checks whether a request identified by key should be allowed.

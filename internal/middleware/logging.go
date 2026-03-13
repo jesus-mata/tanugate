@@ -5,7 +5,7 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/NextSolutionCUU/api-gateway/internal/router"
+	"github.com/jesus-mata/tanugate/internal/router"
 )
 
 // Logging returns a middleware that logs each request and its completion using

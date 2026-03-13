@@ -14,7 +14,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/NextSolutionCUU/api-gateway/internal/config"
+	"github.com/jesus-mata/tanugate/internal/config"
 	"github.com/golang-jwt/jwt/v5"
 )
 

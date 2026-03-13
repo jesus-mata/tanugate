@@ -10,7 +10,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/NextSolutionCUU/api-gateway/internal/config"
+	"github.com/jesus-mata/tanugate/internal/config"
 	"github.com/coreos/go-oidc/v3/oidc"
 )
 

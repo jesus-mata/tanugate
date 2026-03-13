@@ -9,8 +9,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/NextSolutionCUU/api-gateway/internal/config"
-	"github.com/NextSolutionCUU/api-gateway/internal/router"
+	"github.com/jesus-mata/tanugate/internal/config"
+	"github.com/jesus-mata/tanugate/internal/router"
 )
 
 // NewProxyHandler creates an http.Handler that reverse-proxies requests to the

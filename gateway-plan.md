@@ -5,7 +5,7 @@
 Build a stateless API Gateway in Go that sits in front of downstream services, providing routing, authentication, rate limiting, request/response transformation, retries, circuit breaking, CORS, and observability — all driven by a single YAML config file.
 
 **Project**: `~/Documents/SWE/NextSolutions/api-gateway`
-**Module**: `github.com/NextSolutionCUU/api-gateway`
+**Module**: `github.com/jesus-mata/tanugate`
 **Go version**: 1.25+
 **Config reload**: No hot reload — config is loaded once at startup
 **Deployment**: Standalone binary + Docker container
@@ -1113,7 +1113,7 @@ docker run -p 8080:8080 \
 .PHONY: build test lint run docker-build docker-push clean
 
 BINARY=gateway
-MODULE=github.com/NextSolutionCUU/api-gateway
+MODULE=github.com/jesus-mata/tanugate
 
 build:
 	CGO_ENABLED=0 go build -ldflags="-s -w" -o bin/$(BINARY) ./cmd/gateway

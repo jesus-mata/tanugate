@@ -5,7 +5,7 @@ import (
 	"errors"
 	"net/http"
 
-	"github.com/NextSolutionCUU/api-gateway/internal/config"
+	"github.com/jesus-mata/tanugate/internal/config"
 )
 
 // APIKeyAuthenticator validates requests using a static API key sent in a

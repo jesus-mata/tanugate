@@ -4,7 +4,7 @@ import (
 	"context"
 	"time"
 
-	"github.com/NextSolutionCUU/api-gateway/internal/config"
+	"github.com/jesus-mata/tanugate/internal/config"
 	"github.com/google/uuid"
 	"github.com/redis/go-redis/v9"
 )

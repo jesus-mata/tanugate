@@ -8,8 +8,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/NextSolutionCUU/api-gateway/internal/config"
-	"github.com/NextSolutionCUU/api-gateway/internal/router"
+	"github.com/jesus-mata/tanugate/internal/config"
+	"github.com/jesus-mata/tanugate/internal/router"
 )
 
 // recorded holds the details captured by a test upstream server.

@@ -12,8 +12,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/NextSolutionCUU/api-gateway/internal/config"
-	"github.com/NextSolutionCUU/api-gateway/internal/middleware/circuitbreaker"
+	"github.com/jesus-mata/tanugate/internal/config"
+	"github.com/jesus-mata/tanugate/internal/middleware/circuitbreaker"
 )
 
 func retryCfg(maxRetries int, codes ...int) *config.RetryConfig {

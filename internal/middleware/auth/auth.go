@@ -80,6 +80,8 @@ func Middleware(logger *slog.Logger, authenticators map[string]Authenticator) mi
 			}
 
 			providers := mr.Config.Auth.Providers
+			// Invariant: config.Validate rejects "none" combined with other
+			// providers, so this check is sufficient.
 			if len(providers) == 1 && providers[0] == "none" {
 				next.ServeHTTP(w, r)
 				return

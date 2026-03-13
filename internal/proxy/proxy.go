@@ -47,13 +47,19 @@ func NewProxyHandler(routeCfg *config.RouteConfig) http.Handler {
 			if routeCfg.Upstream.PathRewrite != "" && matched != nil && matched.PathParams != nil {
 				rewritten := routeCfg.Upstream.PathRewrite
 				for key, value := range matched.PathParams {
-					rewritten = strings.ReplaceAll(rewritten, "${"+key+"}", value)
+					rewritten = strings.ReplaceAll(rewritten, "{"+key+"}", value)
 				}
 				req.URL.Path = rewritten
 			}
 
 			// Clear RawPath so Go re-encodes from the (possibly rewritten) Path.
 			req.URL.RawPath = ""
+
+			slog.Info("proxying request",
+				"route", routeCfg.Name,
+				"method", req.Method,
+				"upstream_url", req.URL.String(),
+			)
 		},
 		Transport: &http.Transport{
 			ResponseHeaderTimeout: routeCfg.Upstream.Timeout,

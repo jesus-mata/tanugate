@@ -142,7 +142,7 @@ func newTestGateway(t *testing.T) *testGateway {
 			},
 			Upstream: config.UpstreamConfig{
 				URL:         upstreamServer.URL,
-				PathRewrite: "/api/${rest}",
+				PathRewrite: "/api/{rest}",
 				Timeout:     5 * time.Second,
 			},
 		},
@@ -154,7 +154,7 @@ func newTestGateway(t *testing.T) *testGateway {
 			},
 			Upstream: config.UpstreamConfig{
 				URL:         upstreamServer.URL,
-				PathRewrite: "/internal/jwt/${rest}",
+				PathRewrite: "/internal/jwt/{rest}",
 				Timeout:     5 * time.Second,
 			},
 			Auth: &config.RouteAuthConfig{Provider: "jwt_default"},
@@ -186,7 +186,7 @@ func newTestGateway(t *testing.T) *testGateway {
 			},
 			Upstream: config.UpstreamConfig{
 				URL:         upstreamServer.URL,
-				PathRewrite: "/internal/key/${rest}",
+				PathRewrite: "/internal/key/{rest}",
 				Timeout:     5 * time.Second,
 			},
 			Auth: &config.RouteAuthConfig{Provider: "apikey_svc1"},
@@ -212,7 +212,7 @@ func newTestGateway(t *testing.T) *testGateway {
 			},
 			Upstream: config.UpstreamConfig{
 				URL:         upstreamServer.URL,
-				PathRewrite: "/internal/resilience/${rest}",
+				PathRewrite: "/internal/resilience/{rest}",
 				Timeout:     5 * time.Second,
 			},
 			Retry: &config.RetryConfig{
@@ -234,7 +234,7 @@ func newTestGateway(t *testing.T) *testGateway {
 			},
 			Upstream: config.UpstreamConfig{
 				URL:         upstreamServer.URL,
-				PathRewrite: "/internal/cors/${rest}",
+				PathRewrite: "/internal/cors/{rest}",
 				Timeout:     5 * time.Second,
 			},
 			CORS: &config.CORSConfig{

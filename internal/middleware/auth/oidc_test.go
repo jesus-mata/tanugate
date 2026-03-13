@@ -15,8 +15,49 @@ import (
 	"github.com/golang-jwt/jwt/v5"
 )
 
-// serveJWKS creates a test server returning JWKS for the given RSA public key.
-func serveJWKS(t *testing.T, kid string, pub *rsa.PublicKey) *httptest.Server {
+// setupOIDCTestServer creates a test server that serves both the OIDC discovery
+// document and the JWKS endpoint. The discovery document's issuer field is set
+// to the server's own URL so go-oidc's issuer validation passes.
+func setupOIDCTestServer(t *testing.T, kid string, pub *rsa.PublicKey) *httptest.Server {
+	t.Helper()
+
+	var srv *httptest.Server
+	mux := http.NewServeMux()
+
+	mux.HandleFunc("/.well-known/openid-configuration", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]any{
+			"issuer":                                srv.URL,
+			"jwks_uri":                              srv.URL + "/jwks",
+			"subject_types_supported":               []string{"public"},
+			"id_token_signing_alg_values_supported": []string{"RS256"},
+			"response_types_supported":              []string{"id_token"},
+		})
+	})
+
+	mux.HandleFunc("/jwks", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]any{
+			"keys": []map[string]any{
+				{
+					"kty": "RSA",
+					"kid": kid,
+					"use": "sig",
+					"alg": "RS256",
+					"n":   base64.RawURLEncoding.EncodeToString(pub.N.Bytes()),
+					"e":   base64.RawURLEncoding.EncodeToString(big.NewInt(int64(pub.E)).Bytes()),
+				},
+			},
+		})
+	})
+
+	srv = httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+	return srv
+}
+
+// serveJWKSOnly creates a test server that only serves a JWKS endpoint (no discovery).
+func serveJWKSOnly(t *testing.T, kid string, pub *rsa.PublicKey) *httptest.Server {
 	t.Helper()
 	jwks := map[string]any{
 		"keys": []map[string]any{
@@ -30,64 +71,82 @@ func serveJWKS(t *testing.T, kid string, pub *rsa.PublicKey) *httptest.Server {
 			},
 		},
 	}
-	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(jwks)
 	}))
+	t.Cleanup(srv.Close)
+	return srv
 }
 
-func TestOIDC_JWKSFetch(t *testing.T) {
-	privKey, err := rsa.GenerateKey(rand.Reader, 2048)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	srv := serveJWKS(t, "test-kid", &privKey.PublicKey)
-	defer srv.Close()
-
-	a, err := NewOIDCAuthenticator(&config.OIDCConfig{
-		JWKSURL:  srv.URL,
-		CacheTTL: time.Minute,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer a.Stop()
-
-	// Verify key was cached.
-	key := a.cache.getKey("test-kid")
-	if key == nil {
-		t.Fatal("expected key to be cached")
-	}
-}
-
-func TestOIDC_ValidToken(t *testing.T) {
-	privKey, err := rsa.GenerateKey(rand.Reader, 2048)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	srv := serveJWKS(t, "kid-1", &privKey.PublicKey)
-	defer srv.Close()
-
-	a, err := NewOIDCAuthenticator(&config.OIDCConfig{
-		JWKSURL:  srv.URL,
-		CacheTTL: time.Minute,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer a.Stop()
-
-	token := jwt.NewWithClaims(jwt.SigningMethodRS256, jwt.MapClaims{
-		"sub": "oidc-user",
-		"exp": jwt.NewNumericDate(time.Now().Add(time.Hour)),
-	})
-	token.Header["kid"] = "kid-1"
+// signToken creates a signed JWT with the given claims and key ID.
+func signToken(t *testing.T, privKey *rsa.PrivateKey, kid string, claims jwt.MapClaims) string {
+	t.Helper()
+	token := jwt.NewWithClaims(jwt.SigningMethodRS256, claims)
+	token.Header["kid"] = kid
 	tokenStr, err := token.SignedString(privKey)
 	if err != nil {
 		t.Fatal(err)
 	}
+	return tokenStr
+}
+
+func TestOIDC_Discovery_ValidToken(t *testing.T) {
+	privKey, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	srv := setupOIDCTestServer(t, "kid-1", &privKey.PublicKey)
+
+	a, err := NewOIDCAuthenticator(&config.OIDCConfig{
+		IssuerURL: srv.URL,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer a.Stop()
+
+	tokenStr := signToken(t, privKey, "kid-1", jwt.MapClaims{
+		"sub": "oidc-user",
+		"iss": srv.URL,
+		"exp": jwt.NewNumericDate(time.Now().Add(time.Hour)),
+		"iat": jwt.NewNumericDate(time.Now()),
+	})
+
+	r := httptest.NewRequest(http.MethodGet, "/", nil)
+	r.Header.Set("Authorization", "Bearer "+tokenStr)
+
+	result, err := a.Authenticate(r)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.Subject != "oidc-user" {
+		t.Fatalf("expected subject oidc-user, got %s", result.Subject)
+	}
+}
+
+func TestOIDC_JWKS_ValidToken(t *testing.T) {
+	privKey, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	srv := serveJWKSOnly(t, "kid-1", &privKey.PublicKey)
+
+	a, err := NewOIDCAuthenticator(&config.OIDCConfig{
+		JWKSURL: srv.URL,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer a.Stop()
+
+	tokenStr := signToken(t, privKey, "kid-1", jwt.MapClaims{
+		"sub": "oidc-user",
+		"exp": jwt.NewNumericDate(time.Now().Add(time.Hour)),
+		"iat": jwt.NewNumericDate(time.Now()),
+	})
 
 	r := httptest.NewRequest(http.MethodGet, "/", nil)
 	r.Header.Set("Authorization", "Bearer "+tokenStr)
@@ -107,24 +166,21 @@ func TestOIDC_UnknownKid(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	srv := serveJWKS(t, "kid-1", &privKey.PublicKey)
-	defer srv.Close()
+	srv := serveJWKSOnly(t, "kid-1", &privKey.PublicKey)
 
 	a, err := NewOIDCAuthenticator(&config.OIDCConfig{
-		JWKSURL:  srv.URL,
-		CacheTTL: time.Minute,
+		JWKSURL: srv.URL,
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer a.Stop()
 
-	token := jwt.NewWithClaims(jwt.SigningMethodRS256, jwt.MapClaims{
+	tokenStr := signToken(t, privKey, "unknown-kid", jwt.MapClaims{
 		"sub": "oidc-user",
 		"exp": jwt.NewNumericDate(time.Now().Add(time.Hour)),
+		"iat": jwt.NewNumericDate(time.Now()),
 	})
-	token.Header["kid"] = "unknown-kid"
-	tokenStr, _ := token.SignedString(privKey)
 
 	r := httptest.NewRequest(http.MethodGet, "/", nil)
 	r.Header.Set("Authorization", "Bearer "+tokenStr)
@@ -132,6 +188,149 @@ func TestOIDC_UnknownKid(t *testing.T) {
 	_, err = a.Authenticate(r)
 	if err == nil {
 		t.Fatal("expected error for unknown kid")
+	}
+}
+
+func TestOIDC_IssuerMismatch(t *testing.T) {
+	privKey, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	srv := setupOIDCTestServer(t, "kid-1", &privKey.PublicKey)
+
+	a, err := NewOIDCAuthenticator(&config.OIDCConfig{
+		IssuerURL: srv.URL,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer a.Stop()
+
+	// Token has a different issuer than the discovery server.
+	tokenStr := signToken(t, privKey, "kid-1", jwt.MapClaims{
+		"sub": "oidc-user",
+		"iss": "https://evil.example.com",
+		"exp": jwt.NewNumericDate(time.Now().Add(time.Hour)),
+		"iat": jwt.NewNumericDate(time.Now()),
+	})
+
+	r := httptest.NewRequest(http.MethodGet, "/", nil)
+	r.Header.Set("Authorization", "Bearer "+tokenStr)
+
+	_, err = a.Authenticate(r)
+	if err == nil {
+		t.Fatal("expected error for issuer mismatch")
+	}
+	if err.Error() != "invalid token issuer" {
+		t.Fatalf("expected 'invalid token issuer', got %q", err.Error())
+	}
+}
+
+func TestOIDC_AudienceValidation(t *testing.T) {
+	privKey, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	srv := setupOIDCTestServer(t, "kid-1", &privKey.PublicKey)
+
+	a, err := NewOIDCAuthenticator(&config.OIDCConfig{
+		IssuerURL: srv.URL,
+		Audience:  "my-api",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer a.Stop()
+
+	// Token has a different audience.
+	tokenStr := signToken(t, privKey, "kid-1", jwt.MapClaims{
+		"sub": "oidc-user",
+		"iss": srv.URL,
+		"aud": "wrong-audience",
+		"exp": jwt.NewNumericDate(time.Now().Add(time.Hour)),
+		"iat": jwt.NewNumericDate(time.Now()),
+	})
+
+	r := httptest.NewRequest(http.MethodGet, "/", nil)
+	r.Header.Set("Authorization", "Bearer "+tokenStr)
+
+	_, err = a.Authenticate(r)
+	if err == nil {
+		t.Fatal("expected error for wrong audience")
+	}
+	if err.Error() != "invalid token audience" {
+		t.Fatalf("expected 'invalid token audience', got %q", err.Error())
+	}
+}
+
+func TestOIDC_AlgorithmRestriction(t *testing.T) {
+	privKey, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	srv := setupOIDCTestServer(t, "kid-1", &privKey.PublicKey)
+
+	// Only allow ES256, but token is signed with RS256.
+	a, err := NewOIDCAuthenticator(&config.OIDCConfig{
+		IssuerURL:         srv.URL,
+		AllowedAlgorithms: []string{"ES256"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer a.Stop()
+
+	tokenStr := signToken(t, privKey, "kid-1", jwt.MapClaims{
+		"sub": "oidc-user",
+		"iss": srv.URL,
+		"exp": jwt.NewNumericDate(time.Now().Add(time.Hour)),
+		"iat": jwt.NewNumericDate(time.Now()),
+	})
+
+	r := httptest.NewRequest(http.MethodGet, "/", nil)
+	r.Header.Set("Authorization", "Bearer "+tokenStr)
+
+	_, err = a.Authenticate(r)
+	if err == nil {
+		t.Fatal("expected error for algorithm mismatch")
+	}
+}
+
+func TestOIDC_ExpiredToken(t *testing.T) {
+	privKey, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	srv := setupOIDCTestServer(t, "kid-1", &privKey.PublicKey)
+
+	a, err := NewOIDCAuthenticator(&config.OIDCConfig{
+		IssuerURL: srv.URL,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer a.Stop()
+
+	tokenStr := signToken(t, privKey, "kid-1", jwt.MapClaims{
+		"sub": "oidc-user",
+		"iss": srv.URL,
+		"exp": jwt.NewNumericDate(time.Now().Add(-time.Hour)),
+		"iat": jwt.NewNumericDate(time.Now().Add(-2 * time.Hour)),
+	})
+
+	r := httptest.NewRequest(http.MethodGet, "/", nil)
+	r.Header.Set("Authorization", "Bearer "+tokenStr)
+
+	_, err = a.Authenticate(r)
+	if err == nil {
+		t.Fatal("expected error for expired token")
+	}
+	if err.Error() != "token expired" {
+		t.Fatalf("expected 'token expired', got %q", err.Error())
 	}
 }
 
@@ -190,39 +389,6 @@ func TestOIDC_IntrospectionInactive(t *testing.T) {
 	}
 	if err.Error() != "token is not active" {
 		t.Fatalf("expected 'token is not active', got %q", err.Error())
-	}
-}
-
-func TestOIDC_Discovery(t *testing.T) {
-	privKey, err := rsa.GenerateKey(rand.Reader, 2048)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	jwksSrv := serveJWKS(t, "disc-kid", &privKey.PublicKey)
-	defer jwksSrv.Close()
-
-	// Discovery server returns jwks_uri pointing to jwksSrv.
-	discoverySrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(map[string]string{
-			"jwks_uri": jwksSrv.URL,
-		})
-	}))
-	defer discoverySrv.Close()
-
-	a, err := NewOIDCAuthenticator(&config.OIDCConfig{
-		IssuerURL: discoverySrv.URL,
-		CacheTTL:  time.Minute,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer a.Stop()
-
-	key := a.cache.getKey("disc-kid")
-	if key == nil {
-		t.Fatal("expected key from discovery to be cached")
 	}
 }
 

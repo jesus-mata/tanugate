@@ -4,6 +4,10 @@
 # Every field is documented. Copy this file to gateway.yaml and customize.
 # Environment variables are substituted using ${VAR_NAME} syntax on raw YAML
 # text before parsing.
+#
+# IMPORTANT: path_rewrite uses {name} (single braces, no $) to reference named
+# capture groups from path_regex. Do NOT use ${name} there — the config loader
+# would treat it as an environment variable and replace it with an empty string.
 
 # -----------------------------------------------------------------------------
 # Server
@@ -101,11 +105,15 @@ auth_providers:
   # oidc_provider:
   #   type: "oidc"
   #   oidc:
-  #     issuer_url: "https://auth.example.com"  # Used for .well-known/openid-configuration discovery
+  #     issuer_url: "https://auth.example.com"
   #     audience: "my-api"
-  #     # OR specify jwks_url directly:
+  #     allowed_algorithms:           # Default: ["RS256"]
+  #       - "RS256"
+  #       - "ES256"
+  #     skip_issuer_check: false      # Set true for multi-tenant Azure AD
+  #     # OR direct JWKS (no discovery, issuer check skipped):
   #     # jwks_url: "https://auth.example.com/.well-known/jwks.json"
-  #     # OR use introspection:
+  #     # OR opaque token introspection:
   #     # introspection_url: "https://auth.example.com/oauth2/introspect"
   #     # client_id: "gateway"
   #     # client_secret: "${OIDC_CLIENT_SECRET}"
@@ -124,7 +132,7 @@ routes:
       methods: ["GET"]
     upstream:
       url: "http://public-service:3000"
-      path_rewrite: "/api${path}"
+      path_rewrite: "/api{path}"         # {path} refers to the named capture group, NOT an env var
       timeout: 10s
 
   # --- JWT-protected with rate limit + retry + circuit breaker + transforms ---
@@ -134,7 +142,7 @@ routes:
       methods: ["GET", "POST", "PUT", "DELETE"]
     upstream:
       url: "http://user-service:3001"
-      path_rewrite: "/internal/users${path}"
+      path_rewrite: "/internal/users{path}"
       timeout: 30s
     auth:
       provider: "jwt_default"
@@ -181,7 +189,7 @@ routes:
       methods: ["GET", "POST"]
     upstream:
       url: "http://order-service:3002"
-      path_rewrite: "/internal/orders${path}"
+      path_rewrite: "/internal/orders{path}"
       timeout: 30s
     auth:
       provider: "apikey_svc1"
@@ -209,7 +217,7 @@ routes:
       path_regex: "^/api/widgets(?P<path>/.*)?$"
     upstream:
       url: "http://widget-service:3003"
-      path_rewrite: "/widgets${path}"
+      path_rewrite: "/widgets{path}"
       timeout: 15s
     cors:                          # Overrides global CORS for this route
       allowed_origins:
@@ -222,6 +230,9 @@ routes:
 # =============================================================================
 # Dynamic Variables (usable in transform headers/body values)
 # =============================================================================
+# These use ${...} syntax and are resolved at request time by the transform
+# middleware (NOT by the config loader's env var substitution):
+#
 # ${request_id}      — X-Request-ID of the current request
 # ${client_ip}       — Client IP (X-Forwarded-For or RemoteAddr)
 # ${timestamp_iso}   — Current time in ISO 8601 format
@@ -230,3 +241,13 @@ routes:
 # ${route_name}      — Matched route name
 # ${method}          — HTTP method
 # ${path}            — Request path
+#
+# =============================================================================
+# Path Rewrite Variables (usable in path_rewrite only)
+# =============================================================================
+# These use {name} syntax (single braces, NO $) to avoid collision with the
+# config loader's ${VAR} env var substitution. Each {name} is replaced with
+# the corresponding named capture group from path_regex at routing time.
+#
+# Example: path_regex "^/api/v1(?P<rest>/.*)?$"  +  path_rewrite "/v2{rest}"
+#          rewrites /api/v1/users/42  →  /v2/users/42

@@ -173,6 +173,14 @@ func main() {
 		os.Exit(1)
 	}
 
+	// Stop auth providers that have background goroutines.
+	for name, authn := range authenticators {
+		if stopper, ok := authn.(interface{ Stop() }); ok {
+			stopper.Stop()
+			slog.Info("Stopped auth provider", "name", name)
+		}
+	}
+
 	// Close Redis client if applicable.
 	if rl, ok := limiter.(*ratelimit.RedisLimiter); ok {
 		if err := rl.Close(); err != nil {

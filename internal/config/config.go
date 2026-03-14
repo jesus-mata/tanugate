@@ -261,6 +261,13 @@ func (cfg *GatewayConfig) Validate() error {
 	var errs []string
 
 	for _, route := range cfg.Routes {
+		// Validate path regex compiles.
+		if route.Match.PathRegex != "" {
+			if _, err := regexp.Compile(route.Match.PathRegex); err != nil {
+				errs = append(errs, fmt.Sprintf("route %q: invalid path_regex %q: %v", route.Name, route.Match.PathRegex, err))
+			}
+		}
+
 		if route.Auth == nil {
 			continue
 		}
@@ -298,4 +305,408 @@ func (cfg *GatewayConfig) Validate() error {
 		return fmt.Errorf("config validation failed: %s", strings.Join(errs, "; "))
 	}
 	return nil
+}
+
+// NonReloadableChanges compares old and new configurations and returns a list
+// of human-readable warnings for non-reloadable fields that differ. These
+// fields require a full restart to take effect.
+func NonReloadableChanges(old, new *GatewayConfig) []string {
+	var warnings []string
+
+	if old.Server.Host != new.Server.Host {
+		warnings = append(warnings, fmt.Sprintf("server.host changed (%q -> %q) — requires restart", old.Server.Host, new.Server.Host))
+	}
+	if old.Server.Port != new.Server.Port {
+		warnings = append(warnings, fmt.Sprintf("server.port changed (%d -> %d) — requires restart", old.Server.Port, new.Server.Port))
+	}
+	if old.Server.ReadTimeout != new.Server.ReadTimeout {
+		warnings = append(warnings, fmt.Sprintf("server.read_timeout changed (%v -> %v) — requires restart", old.Server.ReadTimeout, new.Server.ReadTimeout))
+	}
+	if old.Server.WriteTimeout != new.Server.WriteTimeout {
+		warnings = append(warnings, fmt.Sprintf("server.write_timeout changed (%v -> %v) — requires restart", old.Server.WriteTimeout, new.Server.WriteTimeout))
+	}
+	if old.Server.IdleTimeout != new.Server.IdleTimeout {
+		warnings = append(warnings, fmt.Sprintf("server.idle_timeout changed (%v -> %v) — requires restart", old.Server.IdleTimeout, new.Server.IdleTimeout))
+	}
+	if old.Server.ShutdownTimeout != new.Server.ShutdownTimeout {
+		warnings = append(warnings, fmt.Sprintf("server.shutdown_timeout changed (%v -> %v) — requires restart", old.Server.ShutdownTimeout, new.Server.ShutdownTimeout))
+	}
+	if !stringSliceEqual(old.Server.TrustedProxies, new.Server.TrustedProxies) {
+		warnings = append(warnings, "server.trusted_proxies changed — requires restart")
+	}
+
+	if old.RateLimit.Backend != new.RateLimit.Backend {
+		warnings = append(warnings, fmt.Sprintf("rate_limit.backend changed (%q -> %q) — requires restart", old.RateLimit.Backend, new.RateLimit.Backend))
+	}
+	if !redisConfigEqual(old.RateLimit.Redis, new.RateLimit.Redis) {
+		warnings = append(warnings, "rate_limit.redis settings changed — requires restart")
+	}
+
+	if !authProvidersEqual(old.AuthProviders, new.AuthProviders) {
+		warnings = append(warnings, "auth_providers definitions changed — requires restart")
+	}
+
+	if old.Logging.Level != new.Logging.Level {
+		warnings = append(warnings, fmt.Sprintf("logging.level changed (%q -> %q) — requires restart", old.Logging.Level, new.Logging.Level))
+	}
+
+	return warnings
+}
+
+func redisConfigEqual(a, b *RedisConfig) bool {
+	if a == nil && b == nil {
+		return true
+	}
+	if a == nil || b == nil {
+		return false
+	}
+	return a.Addr == b.Addr && a.Password == b.Password && a.DB == b.DB
+}
+
+func authProvidersEqual(a, b map[string]AuthProvider) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for name, ap := range a {
+		bp, ok := b[name]
+		if !ok {
+			return false
+		}
+		if ap.Type != bp.Type {
+			return false
+		}
+		// Compare sub-configs by presence (definition changes need restart).
+		if !jwtConfigEqual(ap.JWT, bp.JWT) {
+			return false
+		}
+		if !apiKeyConfigEqual(ap.APIKey, bp.APIKey) {
+			return false
+		}
+		if !oidcConfigEqual(ap.OIDC, bp.OIDC) {
+			return false
+		}
+	}
+	return true
+}
+
+func jwtConfigEqual(a, b *JWTConfig) bool {
+	if a == nil && b == nil {
+		return true
+	}
+	if a == nil || b == nil {
+		return false
+	}
+	return a.Secret == b.Secret && a.PublicKeyFile == b.PublicKeyFile &&
+		a.Algorithm == b.Algorithm && a.Issuer == b.Issuer && a.Audience == b.Audience
+}
+
+func apiKeyConfigEqual(a, b *APIKeyConfig) bool {
+	if a == nil && b == nil {
+		return true
+	}
+	if a == nil || b == nil {
+		return false
+	}
+	if a.Header != b.Header {
+		return false
+	}
+	if len(a.Keys) != len(b.Keys) {
+		return false
+	}
+	for i := range a.Keys {
+		if a.Keys[i].Key != b.Keys[i].Key || a.Keys[i].Name != b.Keys[i].Name {
+			return false
+		}
+	}
+	return true
+}
+
+func oidcConfigEqual(a, b *OIDCConfig) bool {
+	if a == nil && b == nil {
+		return true
+	}
+	if a == nil || b == nil {
+		return false
+	}
+	if a.IssuerURL != b.IssuerURL || a.JWKSURL != b.JWKSURL ||
+		a.IntrospectionURL != b.IntrospectionURL ||
+		a.ClientID != b.ClientID || a.ClientSecret != b.ClientSecret ||
+		a.Audience != b.Audience || a.SkipIssuerCheck != b.SkipIssuerCheck {
+		return false
+	}
+	if len(a.AllowedAlgorithms) != len(b.AllowedAlgorithms) {
+		return false
+	}
+	for i := range a.AllowedAlgorithms {
+		if a.AllowedAlgorithms[i] != b.AllowedAlgorithms[i] {
+			return false
+		}
+	}
+	return true
+}
+
+// DiffSummary returns a human-readable list of reloadable changes between
+// old and new configurations, suitable for logging after a successful reload.
+func DiffSummary(old, new *GatewayConfig) []string {
+	var changes []string
+
+	// Index old routes by name.
+	oldRoutes := make(map[string]*RouteConfig, len(old.Routes))
+	for i := range old.Routes {
+		oldRoutes[old.Routes[i].Name] = &old.Routes[i]
+	}
+
+	// Detect added and modified routes.
+	newRoutes := make(map[string]*RouteConfig, len(new.Routes))
+	for i := range new.Routes {
+		nr := &new.Routes[i]
+		newRoutes[nr.Name] = nr
+
+		or, existed := oldRoutes[nr.Name]
+		if !existed {
+			changes = append(changes, fmt.Sprintf("route %q: added", nr.Name))
+			continue
+		}
+		if routeChanged(or, nr) {
+			changes = append(changes, fmt.Sprintf("route %q: modified", nr.Name))
+		}
+	}
+
+	// Detect removed routes.
+	for _, or := range old.Routes {
+		if _, exists := newRoutes[or.Name]; !exists {
+			changes = append(changes, fmt.Sprintf("route %q: removed", or.Name))
+		}
+	}
+
+	// Route order changes (affects first-match semantics).
+	if len(old.Routes) == len(new.Routes) && len(changes) == 0 {
+		for i := range old.Routes {
+			if old.Routes[i].Name != new.Routes[i].Name {
+				changes = append(changes, "route evaluation order changed")
+				break
+			}
+		}
+	}
+
+	// CORS changes.
+	if corsChanged(&old.CORS, &new.CORS) {
+		changes = append(changes, "global CORS configuration changed")
+	}
+
+	return changes
+}
+
+func routeChanged(a, b *RouteConfig) bool {
+	if a.Match.PathRegex != b.Match.PathRegex {
+		return true
+	}
+	if !stringSliceEqual(a.Match.Methods, b.Match.Methods) {
+		return true
+	}
+	if a.Upstream.URL != b.Upstream.URL || a.Upstream.PathRewrite != b.Upstream.PathRewrite || a.Upstream.Timeout != b.Upstream.Timeout {
+		return true
+	}
+	if !routeAuthEqual(a.Auth, b.Auth) {
+		return true
+	}
+	if !routeLimitEqual(a.RateLimit, b.RateLimit) {
+		return true
+	}
+	// Consider any change in optional config blocks as a modification.
+	if !retryEqual(a.Retry, b.Retry) {
+		return true
+	}
+	if !cbEqual(a.CircuitBreaker, b.CircuitBreaker) {
+		return true
+	}
+	if corsChanged(a.CORS, b.CORS) {
+		return true
+	}
+	if transformChanged(a.Transform, b.Transform) {
+		return true
+	}
+	return false
+}
+
+func stringSliceEqual(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
+}
+
+func routeAuthEqual(a, b *RouteAuthConfig) bool {
+	if a == nil && b == nil {
+		return true
+	}
+	if a == nil || b == nil {
+		return false
+	}
+	return stringSliceEqual(a.Providers, b.Providers)
+}
+
+func routeLimitEqual(a, b *RouteLimitConfig) bool {
+	if a == nil && b == nil {
+		return true
+	}
+	if a == nil || b == nil {
+		return false
+	}
+	return a.RequestsPerWindow == b.RequestsPerWindow && a.Window == b.Window && a.KeySource == b.KeySource
+}
+
+func retryEqual(a, b *RetryConfig) bool {
+	if a == nil && b == nil {
+		return true
+	}
+	if a == nil || b == nil {
+		return false
+	}
+	if a.MaxRetries != b.MaxRetries || a.InitialDelay != b.InitialDelay || a.Multiplier != b.Multiplier {
+		return false
+	}
+	if len(a.RetryableStatusCodes) != len(b.RetryableStatusCodes) {
+		return false
+	}
+	for i := range a.RetryableStatusCodes {
+		if a.RetryableStatusCodes[i] != b.RetryableStatusCodes[i] {
+			return false
+		}
+	}
+	return true
+}
+
+func cbEqual(a, b *CircuitBreakerConfig) bool {
+	if a == nil && b == nil {
+		return true
+	}
+	if a == nil || b == nil {
+		return false
+	}
+	return a.FailureThreshold == b.FailureThreshold && a.SuccessThreshold == b.SuccessThreshold && a.Timeout == b.Timeout
+}
+
+func transformChanged(a, b *TransformConfig) bool {
+	if a == nil && b == nil {
+		return false
+	}
+	if a == nil || b == nil {
+		return true
+	}
+	if a.MaxBodySize != b.MaxBodySize {
+		return true
+	}
+	if directionTransformChanged(a.Request, b.Request) {
+		return true
+	}
+	if directionTransformChanged(a.Response, b.Response) {
+		return true
+	}
+	return false
+}
+
+func directionTransformChanged(a, b *DirectionTransform) bool {
+	if a == nil && b == nil {
+		return false
+	}
+	if a == nil || b == nil {
+		return true
+	}
+	if headerTransformChanged(a.Headers, b.Headers) {
+		return true
+	}
+	if bodyTransformChanged(a.Body, b.Body) {
+		return true
+	}
+	return false
+}
+
+func headerTransformChanged(a, b *HeaderTransform) bool {
+	if a == nil && b == nil {
+		return false
+	}
+	if a == nil || b == nil {
+		return true
+	}
+	if len(a.Add) != len(b.Add) {
+		return true
+	}
+	for k, v := range a.Add {
+		if b.Add[k] != v {
+			return true
+		}
+	}
+	if !stringSliceEqual(a.Remove, b.Remove) {
+		return true
+	}
+	if len(a.Rename) != len(b.Rename) {
+		return true
+	}
+	for k, v := range a.Rename {
+		if b.Rename[k] != v {
+			return true
+		}
+	}
+	return false
+}
+
+func bodyTransformChanged(a, b *BodyTransform) bool {
+	if a == nil && b == nil {
+		return false
+	}
+	if a == nil || b == nil {
+		return true
+	}
+	if len(a.InjectFields) != len(b.InjectFields) {
+		return true
+	}
+	for k, v := range a.InjectFields {
+		bv, ok := b.InjectFields[k]
+		if !ok || fmt.Sprintf("%v", v) != fmt.Sprintf("%v", bv) {
+			return true
+		}
+	}
+	if !stringSliceEqual(a.StripFields, b.StripFields) {
+		return true
+	}
+	if len(a.RenameKeys) != len(b.RenameKeys) {
+		return true
+	}
+	for k, v := range a.RenameKeys {
+		if b.RenameKeys[k] != v {
+			return true
+		}
+	}
+	return false
+}
+
+func corsChanged(a, b *CORSConfig) bool {
+	if a == nil && b == nil {
+		return false
+	}
+	if a == nil || b == nil {
+		return true
+	}
+	if !stringSliceEqual(a.AllowedOrigins, b.AllowedOrigins) {
+		return true
+	}
+	if !stringSliceEqual(a.AllowedMethods, b.AllowedMethods) {
+		return true
+	}
+	if !stringSliceEqual(a.AllowedHeaders, b.AllowedHeaders) {
+		return true
+	}
+	if !stringSliceEqual(a.ExposedHeaders, b.ExposedHeaders) {
+		return true
+	}
+	if a.AllowCredentials != b.AllowCredentials || a.MaxAge != b.MaxAge {
+		return true
+	}
+	return false
 }

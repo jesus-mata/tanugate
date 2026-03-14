@@ -261,6 +261,17 @@ cors:
 
 Handles `SIGINT` and `SIGTERM`. Stops accepting new connections, drains in-flight requests within a configurable timeout (default 15s), and cleans up resources (Redis connections, OIDC background goroutines, rate limiter cleanup).
 
+### Hot Reload
+
+Reload configuration via `SIGHUP` without restarting the gateway. Routes, rate limits, CORS, transforms, circuit breaker thresholds, retry settings, and auth provider assignments are reloaded atomically. In-flight requests complete with the old configuration while new requests use the updated one.
+
+```bash
+# Edit config, then:
+kill -HUP $(pgrep gateway)
+```
+
+Non-reloadable fields (server host/port, rate limit backend, auth provider definitions) are detected and logged as warnings. Invalid configurations are rejected — the old config continues serving. See [docs/hot-reload.md](docs/hot-reload.md) for details.
+
 ### Panic Recovery
 
 Global recovery middleware catches panics in the handler chain, logs the stack trace, and returns a `500 Internal Server Error` instead of crashing the process.
@@ -487,7 +498,7 @@ make clean       # Remove build artifacts
 - [ ] **OpenTelemetry tracing** — Distributed tracing with W3C `traceparent` propagation and OTLP export ([#17](https://github.com/jesus-mata/tanugate/issues/17))
 - [ ] **Forward auth claims to upstreams** — Inject authenticated identity (sub, email, roles) as headers to upstream services ([#18](https://github.com/jesus-mata/tanugate/issues/18))
 - [ ] **Config validation CLI** — `gateway validate` subcommand for pre-deployment config checks ([#19](https://github.com/jesus-mata/tanugate/issues/19))
-- [ ] **Hot reload** — Reload configuration via `SIGHUP` without restarting the gateway ([#20](https://github.com/jesus-mata/tanugate/issues/20))
+- [x] **Hot reload** — Reload configuration via `SIGHUP` without restarting the gateway ([#20](https://github.com/jesus-mata/tanugate/issues/20))
 - [ ] **Request body size limits** — Per-route and global max request body enforcement ([#21](https://github.com/jesus-mata/tanugate/issues/21))
 - [ ] **Helm chart** — Packaged Kubernetes deployment
 

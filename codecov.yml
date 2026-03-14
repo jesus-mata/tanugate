@@ -1,0 +1,26 @@
+codecov:
+  require_ci_to_pass: true
+
+coverage:
+  precision: 2
+  round: down
+  range: "60...90"
+
+  status:
+    project:
+      default:
+        target: auto
+        threshold: 2%
+    patch:
+      default:
+        target: 80%
+
+comment:
+  layout: "reach,diff,flags,components"
+  behavior: default
+  require_changes: true
+
+ignore:
+  - "cmd/**"
+  - "**/*_test.go"
+  - "**/testdata/**"

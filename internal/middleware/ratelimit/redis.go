@@ -84,13 +84,14 @@ if level + 1 <= capacity then
 else
     redis.call('HSET', key, 'level', tostring(level), 'last_update', tostring(now_ms))
     redis.call('PEXPIRE', key, window_ms)
-    local reset_ms = now_ms + math.ceil(1 / leak_rate)
+    local overflow = level + 1 - capacity
+    local reset_ms = now_ms + math.ceil(overflow / leak_rate)
     return {0, 0, reset_ms}
 end
 `)
 
-// RedisLimiter implements the Limiter interface using a Redis-backed sliding
-// window algorithm.
+// RedisLimiter implements the Limiter interface using Redis-backed rate
+// limiting algorithms (sliding window and leaky bucket).
 type RedisLimiter struct {
 	client       *redis.Client
 	queryTimeout time.Duration

@@ -146,6 +146,7 @@ type RouteLimitConfig struct {
 	RequestsPerWindow int           `yaml:"requests_per_window"`
 	Window            time.Duration `yaml:"window"`
 	KeySource         string        `yaml:"key_source"`
+	Algorithm         string        `yaml:"algorithm"`
 }
 
 // RetryConfig holds retry behaviour settings for a route.
@@ -278,6 +279,9 @@ func applyDefaults(cfg *GatewayConfig) {
 		if cfg.Routes[i].Upstream.Timeout == 0 {
 			cfg.Routes[i].Upstream.Timeout = 30 * time.Second
 		}
+		if cfg.Routes[i].RateLimit != nil && cfg.Routes[i].RateLimit.Algorithm == "" {
+			cfg.Routes[i].RateLimit.Algorithm = "sliding_window"
+		}
 	}
 }
 
@@ -306,6 +310,9 @@ func (cfg *GatewayConfig) Validate() error {
 				if !strings.HasPrefix(rl.KeySource, "header:") || strings.TrimPrefix(rl.KeySource, "header:") == "" {
 					errs = append(errs, fmt.Sprintf("route %q: invalid key_source %q (must be \"ip\", \"header:<name>\", or empty)", route.Name, rl.KeySource))
 				}
+			}
+			if rl.Algorithm != "sliding_window" && rl.Algorithm != "leaky_bucket" {
+				errs = append(errs, fmt.Sprintf("route %q: invalid algorithm %q (must be \"sliding_window\" or \"leaky_bucket\")", route.Name, rl.Algorithm))
 			}
 		}
 
@@ -603,7 +610,7 @@ func routeLimitEqual(a, b *RouteLimitConfig) bool {
 	if a == nil || b == nil {
 		return false
 	}
-	return a.RequestsPerWindow == b.RequestsPerWindow && a.Window == b.Window && a.KeySource == b.KeySource
+	return a.RequestsPerWindow == b.RequestsPerWindow && a.Window == b.Window && a.KeySource == b.KeySource && a.Algorithm == b.Algorithm
 }
 
 func retryEqual(a, b *RetryConfig) bool {

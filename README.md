@@ -111,12 +111,13 @@ routes:
 
 ### Rate Limiting
 
-Per-route rate limiting with two backends:
+Per-route rate limiting with two backends and per-route algorithm selection (Redis):
 
-| Backend | Algorithm | Use Case |
-|---------|-----------|----------|
-| `memory` | Token bucket | Single instance or development |
-| `redis` | Sliding window (Lua) | Multi-instance / production |
+| Backend | Algorithm | Description | Use Case |
+|---------|-----------|-------------|----------|
+| `memory` | Token bucket | Fixed, not configurable | Single instance or development |
+| `redis` | `sliding_window` (default) | Counts requests in a rolling time window | Burst-tolerant, accurate quota tracking |
+| `redis` | `leaky_bucket` | Constant drain rate, O(1) per request | Smooth traffic shaping, fixed throughput |
 
 Key extraction options:
 - `ip` (default) — client IP with trusted proxy support via `X-Forwarded-For`
@@ -145,6 +146,7 @@ routes:
       requests_per_window: 100
       window: 1m
       key_source: "ip"
+      algorithm: "sliding_window"  # or "leaky_bucket" (Redis only)
 ```
 
 ### Circuit Breaker

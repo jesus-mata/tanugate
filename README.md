@@ -9,6 +9,11 @@
 </p>
 
 <p align="center">
+  <a href="https://github.com/jesus-mata/tanugate/actions/workflows/ci.yml"><img src="https://github.com/jesus-mata/tanugate/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
+  <a href="https://codecov.io/gh/jesus-mata/tanugate"><img src="https://codecov.io/gh/jesus-mata/tanugate/branch/main/graph/badge.svg" alt="Coverage"></a>
+</p>
+
+<p align="center">
   <a href="#features">Features</a> &middot;
   <a href="#quick-start">Quick Start</a> &middot;
   <a href="#configuration">Configuration</a> &middot;

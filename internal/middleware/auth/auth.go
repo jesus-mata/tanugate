@@ -121,13 +121,16 @@ func Middleware(logger *slog.Logger, authenticators map[string]Authenticator) mi
 func writeError(w http.ResponseWriter, status int, message string) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
-	errKey := "unauthorized"
-	if status == http.StatusForbidden {
+	var errKey string
+	switch status {
+	case http.StatusForbidden:
 		errKey = "forbidden"
-	} else if status == http.StatusInternalServerError {
+	case http.StatusInternalServerError:
 		errKey = "internal_error"
+	default:
+		errKey = "unauthorized"
 	}
-	json.NewEncoder(w).Encode(map[string]string{
+	_ = json.NewEncoder(w).Encode(map[string]string{
 		"error":   errKey,
 		"message": message,
 	})

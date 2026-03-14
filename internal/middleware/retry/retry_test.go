@@ -130,7 +130,7 @@ func TestAllRetriesExhausted_Returns502(t *testing.T) {
 	}
 
 	var body map[string]string
-	json.NewDecoder(rec.Body).Decode(&body)
+	_ = json.NewDecoder(rec.Body).Decode(&body)
 	if body["error"] != "bad_gateway" {
 		t.Fatalf("expected bad_gateway error, got %q", body["error"])
 	}
@@ -142,7 +142,7 @@ func TestCircuitOpen_NoRetry_Immediate503(t *testing.T) {
 		circuitbreaker.WithClock(func() time.Time { return now }),
 	)
 	// Trip the circuit.
-	cb.Execute(func() error { return errors.New("fail") })
+	_ = cb.Execute(func() error { return errors.New("fail") })
 
 	var count atomic.Int32
 	handler := Retry(

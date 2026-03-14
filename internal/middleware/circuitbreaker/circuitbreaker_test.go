@@ -50,7 +50,7 @@ func TestClosed_ToOpen_AfterNFailures(t *testing.T) {
 
 	fail := errors.New("fail")
 	for i := 0; i < 3; i++ {
-		cb.Execute(func() error { return fail })
+		_ = cb.Execute(func() error { return fail })
 	}
 
 	if cb.State() != StateOpen {
@@ -64,7 +64,7 @@ func TestOpen_ImmediateReject(t *testing.T) {
 
 	fail := errors.New("fail")
 	for i := 0; i < 3; i++ {
-		cb.Execute(func() error { return fail })
+		_ = cb.Execute(func() error { return fail })
 	}
 
 	called := false
@@ -86,13 +86,13 @@ func TestOpen_ToHalfOpen_AfterTimeout(t *testing.T) {
 
 	fail := errors.New("fail")
 	for i := 0; i < 3; i++ {
-		cb.Execute(func() error { return fail })
+		_ = cb.Execute(func() error { return fail })
 	}
 
 	now = now.Add(6 * time.Second)
 
 	called := false
-	cb.Execute(func() error {
+	_ = cb.Execute(func() error {
 		called = true
 		return nil
 	})
@@ -108,14 +108,14 @@ func TestHalfOpen_ToClosed_AfterNSuccesses(t *testing.T) {
 
 	fail := errors.New("fail")
 	for i := 0; i < 3; i++ {
-		cb.Execute(func() error { return fail })
+		_ = cb.Execute(func() error { return fail })
 	}
 
 	now = now.Add(6 * time.Second)
 
 	// successThreshold = 2
 	for i := 0; i < 2; i++ {
-		cb.Execute(func() error { return nil })
+		_ = cb.Execute(func() error { return nil })
 	}
 
 	if cb.State() != StateClosed {
@@ -129,14 +129,14 @@ func TestHalfOpen_ToOpen_OnFailure(t *testing.T) {
 
 	fail := errors.New("fail")
 	for i := 0; i < 3; i++ {
-		cb.Execute(func() error { return fail })
+		_ = cb.Execute(func() error { return fail })
 	}
 
 	now = now.Add(6 * time.Second)
 
 	// One success in half-open, then fail
-	cb.Execute(func() error { return nil })
-	cb.Execute(func() error { return fail })
+	_ = cb.Execute(func() error { return nil })
+	_ = cb.Execute(func() error { return fail })
 
 	if cb.State() != StateOpen {
 		t.Fatalf("expected StateOpen after failure in half-open, got %v", cb.State())
@@ -159,7 +159,7 @@ func TestConcurrentAccess(t *testing.T) {
 		wg.Add(1)
 		go func(n int) {
 			defer wg.Done()
-			cb.Execute(func() error {
+			_ = cb.Execute(func() error {
 				if n%3 == 0 {
 					return errors.New("fail")
 				}
@@ -192,7 +192,7 @@ func TestOnStateChangeCallback(t *testing.T) {
 
 	fail := errors.New("fail")
 	for i := 0; i < 3; i++ {
-		cb.Execute(func() error { return fail })
+		_ = cb.Execute(func() error { return fail })
 	}
 
 	if len(transitions) != 1 {
@@ -229,13 +229,13 @@ func TestCountersResetOnSuccess(t *testing.T) {
 
 	fail := errors.New("fail")
 	// 2 failures (below threshold of 3)
-	cb.Execute(func() error { return fail })
-	cb.Execute(func() error { return fail })
+	_ = cb.Execute(func() error { return fail })
+	_ = cb.Execute(func() error { return fail })
 	// success resets failure count
-	cb.Execute(func() error { return nil })
+	_ = cb.Execute(func() error { return nil })
 	// 2 more failures — still below threshold if reset worked
-	cb.Execute(func() error { return fail })
-	cb.Execute(func() error { return fail })
+	_ = cb.Execute(func() error { return fail })
+	_ = cb.Execute(func() error { return fail })
 
 	if cb.State() != StateClosed {
 		t.Fatalf("expected StateClosed (counters should have reset), got %v", cb.State())
@@ -249,21 +249,21 @@ func TestCountersResetOnFailure(t *testing.T) {
 	fail := errors.New("fail")
 	// Trip to open
 	for i := 0; i < 3; i++ {
-		cb.Execute(func() error { return fail })
+		_ = cb.Execute(func() error { return fail })
 	}
 
 	// Advance past timeout → half-open
 	now = now.Add(6 * time.Second)
 
 	// 1 success in half-open (below successThreshold=2)
-	cb.Execute(func() error { return nil })
+	_ = cb.Execute(func() error { return nil })
 
 	if cb.State() != StateHalfOpen {
 		t.Fatalf("expected StateHalfOpen after 1 success, got %v", cb.State())
 	}
 
 	// failure → back to open, counters reset
-	cb.Execute(func() error { return fail })
+	_ = cb.Execute(func() error { return fail })
 
 	if cb.State() != StateOpen {
 		t.Fatalf("expected StateOpen after failure in half-open, got %v", cb.State())
@@ -274,7 +274,7 @@ func TestCountersResetOnFailure(t *testing.T) {
 
 	// Need full successThreshold successes (counters were reset)
 	for i := 0; i < 2; i++ {
-		cb.Execute(func() error { return nil })
+		_ = cb.Execute(func() error { return nil })
 	}
 
 	if cb.State() != StateClosed {
@@ -289,7 +289,7 @@ func TestHalfOpen_OnlyOneProbeAllowed(t *testing.T) {
 	// Trip to Open.
 	fail := errors.New("fail")
 	for i := 0; i < 3; i++ {
-		cb.Execute(func() error { return fail })
+		_ = cb.Execute(func() error { return fail })
 	}
 
 	// Advance past timeout so next Execute transitions to HalfOpen.

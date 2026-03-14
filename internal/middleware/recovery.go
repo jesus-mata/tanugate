@@ -21,7 +21,7 @@ func Recovery() Middleware {
 
 					w.Header().Set("Content-Type", "application/json")
 					w.WriteHeader(http.StatusInternalServerError)
-					json.NewEncoder(w).Encode(map[string]string{
+					_ = json.NewEncoder(w).Encode(map[string]string{
 						"error":   "internal_error",
 						"message": "Internal server error",
 					})

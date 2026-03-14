@@ -84,7 +84,7 @@ type corsResponseWriter struct {
 func (crw *corsResponseWriter) WriteHeader(code int) {
 	if !crw.headersSent {
 		crw.headersSent = true
-		h := crw.ResponseWriter.Header()
+		h := crw.Header()
 		if crw.isOverride {
 			// Per-route override: inject headers and set marker so the
 			// outer (global) corsResponseWriter skips its own injection.

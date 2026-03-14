@@ -1,4 +1,5 @@
 .git
+.github/
 bin/
 *.md
 plans/

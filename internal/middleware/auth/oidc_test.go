@@ -26,7 +26,7 @@ func setupOIDCTestServer(t *testing.T, kid string, pub *rsa.PublicKey) *httptest
 
 	mux.HandleFunc("/.well-known/openid-configuration", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(map[string]any{
+		_ = json.NewEncoder(w).Encode(map[string]any{
 			"issuer":                                srv.URL,
 			"jwks_uri":                              srv.URL + "/jwks",
 			"subject_types_supported":               []string{"public"},
@@ -37,7 +37,7 @@ func setupOIDCTestServer(t *testing.T, kid string, pub *rsa.PublicKey) *httptest
 
 	mux.HandleFunc("/jwks", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(map[string]any{
+		_ = json.NewEncoder(w).Encode(map[string]any{
 			"keys": []map[string]any{
 				{
 					"kty": "RSA",
@@ -73,7 +73,7 @@ func serveJWKSOnly(t *testing.T, kid string, pub *rsa.PublicKey) *httptest.Serve
 	}
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(jwks)
+		_ = json.NewEncoder(w).Encode(jwks)
 	}))
 	t.Cleanup(srv.Close)
 	return srv
@@ -336,11 +336,11 @@ func TestOIDC_ExpiredToken(t *testing.T) {
 
 func TestOIDC_Introspection(t *testing.T) {
 	introspectionSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		r.ParseForm()
+		_ = r.ParseForm()
 		tok := r.FormValue("token")
 		resp := map[string]any{"active": tok == "valid-token", "sub": "intro-user", "client_id": "my-client"}
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(resp)
+		_ = json.NewEncoder(w).Encode(resp)
 	}))
 	defer introspectionSrv.Close()
 
@@ -369,7 +369,7 @@ func TestOIDC_IntrospectionInactive(t *testing.T) {
 	introspectionSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		resp := map[string]any{"active": false}
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(resp)
+		_ = json.NewEncoder(w).Encode(resp)
 	}))
 	defer introspectionSrv.Close()
 

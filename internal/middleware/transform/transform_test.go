@@ -231,7 +231,7 @@ func TestTransformBody(t *testing.T) {
 			t.Fatal(err)
 		}
 		var data map[string]any
-		json.Unmarshal(result, &data)
+		_ = json.Unmarshal(result, &data)
 		if _, ok := data["a"]; ok {
 			t.Error("field 'a' should be stripped")
 		}
@@ -252,7 +252,7 @@ func TestTransformBody(t *testing.T) {
 			t.Fatal(err)
 		}
 		var data map[string]any
-		json.Unmarshal(result, &data)
+		_ = json.Unmarshal(result, &data)
 		if _, ok := data["old_name"]; ok {
 			t.Error("old key should be removed")
 		}
@@ -270,7 +270,7 @@ func TestTransformBody(t *testing.T) {
 			t.Fatal(err)
 		}
 		var data map[string]any
-		json.Unmarshal(result, &data)
+		_ = json.Unmarshal(result, &data)
 		if data["injected"] != "new_val" {
 			t.Errorf("injected = %v, want %q", data["injected"], "new_val")
 		}
@@ -288,7 +288,7 @@ func TestTransformBody(t *testing.T) {
 			t.Fatal(err)
 		}
 		var data map[string]any
-		json.Unmarshal(result, &data)
+		_ = json.Unmarshal(result, &data)
 		if data["method"] != "GET" {
 			t.Errorf("method = %v, want %q", data["method"], "GET")
 		}
@@ -305,7 +305,7 @@ func TestTransformBody(t *testing.T) {
 			t.Fatal(err)
 		}
 		var data map[string]any
-		json.Unmarshal(result, &data)
+		_ = json.Unmarshal(result, &data)
 		if _, ok := data["remove_me"]; ok {
 			t.Error("remove_me should be stripped")
 		}
@@ -332,7 +332,7 @@ func TestTransformBody(t *testing.T) {
 			t.Fatal(err)
 		}
 		var data map[string]any
-		json.Unmarshal(result, &data)
+		_ = json.Unmarshal(result, &data)
 		nested := data["nested"].(map[string]any)
 		if _, ok := nested["inner"]; !ok {
 			t.Error("nested 'inner' should NOT be affected")
@@ -387,7 +387,7 @@ func TestBufferingResponseWriter(t *testing.T) {
 
 	t.Run("body buffering", func(t *testing.T) {
 		buf := &bufferingResponseWriter{headers: make(http.Header), statusCode: http.StatusOK}
-		buf.Write([]byte("hello"))
+		_, _ = buf.Write([]byte("hello"))
 		if buf.body.String() != "hello" {
 			t.Errorf("body = %q, want %q", buf.body.String(), "hello")
 		}
@@ -395,8 +395,8 @@ func TestBufferingResponseWriter(t *testing.T) {
 
 	t.Run("multiple writes accumulate", func(t *testing.T) {
 		buf := &bufferingResponseWriter{headers: make(http.Header), statusCode: http.StatusOK}
-		buf.Write([]byte("hello "))
-		buf.Write([]byte("world"))
+		_, _ = buf.Write([]byte("hello "))
+		_, _ = buf.Write([]byte("world"))
 		if buf.body.String() != "hello world" {
 			t.Errorf("body = %q, want %q", buf.body.String(), "hello world")
 		}
@@ -404,7 +404,7 @@ func TestBufferingResponseWriter(t *testing.T) {
 
 	t.Run("implicit 200 status", func(t *testing.T) {
 		buf := &bufferingResponseWriter{headers: make(http.Header), statusCode: http.StatusOK}
-		buf.Write([]byte("body"))
+		_, _ = buf.Write([]byte("body"))
 		if buf.statusCode != http.StatusOK {
 			t.Errorf("status = %d, want %d", buf.statusCode, http.StatusOK)
 		}
@@ -473,7 +473,7 @@ func TestRequestTransformMiddleware(t *testing.T) {
 		handler := RequestTransform(cfg, 0)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			body, _ := io.ReadAll(r.Body)
 			var data map[string]any
-			json.Unmarshal(body, &data)
+			_ = json.Unmarshal(body, &data)
 			if _, ok := data["secret"]; ok {
 				t.Error("secret should be stripped")
 			}
@@ -531,7 +531,7 @@ func TestResponseTransformMiddleware(t *testing.T) {
 		upstream := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			w.Header().Set("X-Upstream", "val")
 			w.WriteHeader(http.StatusCreated)
-			w.Write([]byte("body"))
+			_, _ = w.Write([]byte("body"))
 		})
 		handler := ResponseTransform(nil, 0)(upstream)
 		rec := httptest.NewRecorder()
@@ -554,7 +554,7 @@ func TestResponseTransformMiddleware(t *testing.T) {
 		upstream := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			w.Header().Set("X-Remove", "bye")
 			w.Header().Set("X-Keep", "stay")
-			w.Write([]byte("ok"))
+			_, _ = w.Write([]byte("ok"))
 		})
 		handler := ResponseTransform(cfg, 0)(upstream)
 		rec := httptest.NewRecorder()
@@ -579,13 +579,13 @@ func TestResponseTransformMiddleware(t *testing.T) {
 		}
 		upstream := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			w.Header().Set("Content-Type", "application/json")
-			w.Write([]byte(`{"secret":"s3cret","keep":"val"}`))
+			_, _ = w.Write([]byte(`{"secret":"s3cret","keep":"val"}`))
 		})
 		handler := ResponseTransform(cfg, 0)(upstream)
 		rec := httptest.NewRecorder()
 		handler.ServeHTTP(rec, httptest.NewRequest("GET", "/", nil))
 		var data map[string]any
-		json.Unmarshal(rec.Body.Bytes(), &data)
+		_ = json.Unmarshal(rec.Body.Bytes(), &data)
 		if _, ok := data["secret"]; ok {
 			t.Error("secret should be stripped")
 		}
@@ -606,7 +606,7 @@ func TestResponseTransformMiddleware(t *testing.T) {
 		}
 		upstream := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			w.WriteHeader(http.StatusNotFound)
-			w.Write([]byte("not found"))
+			_, _ = w.Write([]byte("not found"))
 		})
 		handler := ResponseTransform(cfg, 0)(upstream)
 		rec := httptest.NewRecorder()
@@ -624,7 +624,7 @@ func TestResponseTransformMiddleware(t *testing.T) {
 		}
 		upstream := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			time.Sleep(5 * time.Millisecond)
-			w.Write([]byte("ok"))
+			_, _ = w.Write([]byte("ok"))
 		})
 		// Wrap with RequestTransform(nil) to set start time in context.
 		handler := RequestTransform(nil, 0)(ResponseTransform(cfg, 0)(upstream))
@@ -649,7 +649,7 @@ func TestResponseTransformMiddleware(t *testing.T) {
 		original := "plain text response"
 		upstream := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			w.Header().Set("Content-Type", "text/plain")
-			w.Write([]byte(original))
+			_, _ = w.Write([]byte(original))
 		})
 		handler := ResponseTransform(cfg, 0)(upstream)
 		rec := httptest.NewRecorder()
@@ -697,7 +697,7 @@ func TestIntegration_RequestAndResponseTransform(t *testing.T) {
 
 		body, _ := io.ReadAll(r.Body)
 		var reqData map[string]any
-		json.Unmarshal(body, &reqData)
+		_ = json.Unmarshal(body, &reqData)
 		if _, ok := reqData["password"]; ok {
 			t.Error("password should be stripped from request body")
 		}
@@ -709,7 +709,7 @@ func TestIntegration_RequestAndResponseTransform(t *testing.T) {
 		w.Header().Set("Content-Type", "application/json")
 		w.Header().Set("X-Internal", "secret")
 		w.WriteHeader(http.StatusOK)
-		json.NewEncoder(w).Encode(map[string]any{
+		_ = json.NewEncoder(w).Encode(map[string]any{
 			"internal_id": 123,
 			"old_field":   "value",
 			"data":        "result",
@@ -790,7 +790,7 @@ func TestRequestTransform_BodySizeLimit(t *testing.T) {
 		t.Errorf("status = %d, want %d", rec.Code, http.StatusRequestEntityTooLarge)
 	}
 	var resp map[string]string
-	json.Unmarshal(rec.Body.Bytes(), &resp)
+	_ = json.Unmarshal(rec.Body.Bytes(), &resp)
 	if resp["error"] != "request_too_large" {
 		t.Errorf("error = %q, want %q", resp["error"], "request_too_large")
 	}
@@ -813,7 +813,7 @@ func TestRequestTransform_BodyWithinLimit(t *testing.T) {
 		called = true
 		body, _ := io.ReadAll(r.Body)
 		var data map[string]any
-		json.Unmarshal(body, &data)
+		_ = json.Unmarshal(body, &data)
 		if data["added"] != "val" {
 			t.Error("injected field should be present")
 		}
@@ -840,7 +840,7 @@ func TestResponseTransform_BodySizeLimit(t *testing.T) {
 
 	upstream := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		w.Write([]byte(bigBody))
+		_, _ = w.Write([]byte(bigBody))
 	})
 	handler := ResponseTransform(cfg, limit)(upstream)
 	rec := httptest.NewRecorder()
@@ -850,7 +850,7 @@ func TestResponseTransform_BodySizeLimit(t *testing.T) {
 		t.Errorf("status = %d, want %d", rec.Code, http.StatusBadGateway)
 	}
 	var resp map[string]string
-	json.Unmarshal(rec.Body.Bytes(), &resp)
+	_ = json.Unmarshal(rec.Body.Bytes(), &resp)
 	if resp["error"] != "bad_gateway" {
 		t.Errorf("error = %q, want %q", resp["error"], "bad_gateway")
 	}
@@ -867,7 +867,7 @@ func TestResponseTransform_BodyWithinLimit(t *testing.T) {
 
 	upstream := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		w.Write([]byte(smallBody))
+		_, _ = w.Write([]byte(smallBody))
 	})
 	handler := ResponseTransform(cfg, limit)(upstream)
 	rec := httptest.NewRecorder()
@@ -877,7 +877,7 @@ func TestResponseTransform_BodyWithinLimit(t *testing.T) {
 		t.Errorf("status = %d, want %d", rec.Code, http.StatusOK)
 	}
 	var data map[string]any
-	json.Unmarshal(rec.Body.Bytes(), &data)
+	_ = json.Unmarshal(rec.Body.Bytes(), &data)
 	if data["added"] != "val" {
 		t.Error("injected field should be present")
 	}

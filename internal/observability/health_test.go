@@ -33,7 +33,7 @@ func TestHealth_BasicResponse(t *testing.T) {
 	}
 
 	var resp observability.HealthResponse
-	json.NewDecoder(rec.Body).Decode(&resp)
+	_ = json.NewDecoder(rec.Body).Decode(&resp)
 
 	if resp.Status != "up" {
 		t.Errorf("expected status=up, got %s", resp.Status)
@@ -52,7 +52,7 @@ func TestHealth_RedisNotConfigured(t *testing.T) {
 	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/health", nil))
 
 	var resp observability.HealthResponse
-	json.NewDecoder(rec.Body).Decode(&resp)
+	_ = json.NewDecoder(rec.Body).Decode(&resp)
 
 	if resp.Checks["redis"] != "not_configured" {
 		t.Errorf("expected redis=not_configured, got %s", resp.Checks["redis"])
@@ -68,7 +68,7 @@ func TestHealth_RedisUp(t *testing.T) {
 	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/health", nil))
 
 	var resp observability.HealthResponse
-	json.NewDecoder(rec.Body).Decode(&resp)
+	_ = json.NewDecoder(rec.Body).Decode(&resp)
 
 	if resp.Status != "up" {
 		t.Errorf("expected status=up, got %s", resp.Status)
@@ -87,7 +87,7 @@ func TestHealth_RedisDown(t *testing.T) {
 	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/health", nil))
 
 	var resp observability.HealthResponse
-	json.NewDecoder(rec.Body).Decode(&resp)
+	_ = json.NewDecoder(rec.Body).Decode(&resp)
 
 	if resp.Status != "degraded" {
 		t.Errorf("expected status=degraded, got %s", resp.Status)
@@ -120,7 +120,7 @@ func TestHealth_NoChecksField(t *testing.T) {
 	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/health", nil))
 
 	var raw map[string]any
-	json.NewDecoder(rec.Body).Decode(&raw)
+	_ = json.NewDecoder(rec.Body).Decode(&raw)
 
 	if _, ok := raw["checks"]; ok {
 		t.Error("expected no checks field for memory backend")

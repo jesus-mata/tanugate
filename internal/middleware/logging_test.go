@@ -173,7 +173,7 @@ func TestLogging_ImplicitStatusOK(t *testing.T) {
 	logger := newTestLogger(&buf, slog.LevelInfo)
 
 	handler := middleware.Logging(logger)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Write([]byte("hello"))
+		_, _ = w.Write([]byte("hello"))
 	}))
 
 	req := httptest.NewRequest(http.MethodGet, "/test", nil)
@@ -192,7 +192,7 @@ func TestLogging_ResponseSize(t *testing.T) {
 
 	body := []byte("hello world")
 	handler := middleware.Logging(logger)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Write(body)
+		_, _ = w.Write(body)
 	}))
 
 	req := httptest.NewRequest(http.MethodGet, "/test", nil)

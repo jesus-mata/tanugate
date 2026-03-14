@@ -84,7 +84,7 @@ func TestMetrics_ResponseSizeRecorded(t *testing.T) {
 	mw := m.Middleware()
 
 	handler := mw(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Write([]byte("response body"))
+		_, _ = w.Write([]byte("response body"))
 	}))
 
 	req := httptest.NewRequest(http.MethodGet, "/test", nil)

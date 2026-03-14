@@ -50,7 +50,7 @@ func (m *mockUpstream) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	var bodyBytes []byte
 	if r.Body != nil {
 		buf := new(bytes.Buffer)
-		buf.ReadFrom(r.Body)
+		_, _ = buf.ReadFrom(r.Body)
 		bodyBytes = buf.Bytes()
 	}
 
@@ -67,7 +67,7 @@ func (m *mockUpstream) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		m.mu.Unlock()
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusServiceUnavailable)
-		json.NewEncoder(w).Encode(map[string]string{"error": "service_unavailable"})
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": "service_unavailable"})
 		return
 	}
 	m.mu.Unlock()
@@ -76,7 +76,7 @@ func (m *mockUpstream) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("X-Upstream-Path", r.URL.Path)
 	w.Header().Set("X-Powered-By", "mock-upstream")
 	w.WriteHeader(http.StatusOK)
-	json.NewEncoder(w).Encode(map[string]any{
+	_ = json.NewEncoder(w).Encode(map[string]any{
 		"echo_path":   r.URL.Path,
 		"echo_method": r.Method,
 		"echo_body":   string(bodyBytes),

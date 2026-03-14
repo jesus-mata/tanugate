@@ -304,6 +304,64 @@ func TestAllow_UniqueMembersAcrossCalls(t *testing.T) {
 	}
 }
 
+func TestGenerateInstanceID_UniqueAcrossCalls(t *testing.T) {
+	id1 := generateInstanceID()
+	id2 := generateInstanceID()
+
+	if id1 == "" {
+		t.Fatal("instanceID must not be empty")
+	}
+	if id1 == id2 {
+		t.Fatal("consecutive generateInstanceID calls must produce different IDs")
+	}
+}
+
+func TestAllow_CrossInstanceMemberUniqueness(t *testing.T) {
+	// Simulate two gateway instances sharing the same Redis.
+	// Both use the same key and limit. Without instanceID, members would
+	// collide and ZADD would overwrite, undercounting requests.
+	s := miniredis.RunT(t)
+	cfg := &config.RedisConfig{Addr: s.Addr()}
+	rl1 := NewRedisLimiter(cfg)
+	rl2 := NewRedisLimiter(cfg)
+	t.Cleanup(func() { _ = rl1.Close(); _ = rl2.Close() })
+
+	ctx := context.Background()
+	key := "key:cross-instance"
+	limit := 4
+
+	// Instance 1 sends 2 requests.
+	for i := range 2 {
+		allowed, _, _, err := rl1.Allow(ctx, key, limit, time.Minute)
+		if err != nil {
+			t.Fatalf("rl1 request %d: unexpected error: %v", i+1, err)
+		}
+		if !allowed {
+			t.Fatalf("rl1 request %d should be allowed", i+1)
+		}
+	}
+
+	// Instance 2 sends 2 requests — both should count against the same key.
+	for i := range 2 {
+		allowed, _, _, err := rl2.Allow(ctx, key, limit, time.Minute)
+		if err != nil {
+			t.Fatalf("rl2 request %d: unexpected error: %v", i+1, err)
+		}
+		if !allowed {
+			t.Fatalf("rl2 request %d should be allowed", i+1)
+		}
+	}
+
+	// The 5th request from either instance must be rejected.
+	allowed, _, _, err := rl1.Allow(ctx, key, limit, time.Minute)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if allowed {
+		t.Fatal("5th request should be rejected — proves all 4 cross-instance members were unique")
+	}
+}
+
 func TestAllow_ConnectionRefused(t *testing.T) {
 	// Point at an address where nothing is listening.
 	rl := NewRedisLimiter(&config.RedisConfig{

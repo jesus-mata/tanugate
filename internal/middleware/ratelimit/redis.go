@@ -2,7 +2,11 @@ package ratelimit
 
 import (
 	"context"
+	"crypto/rand"
 	"crypto/tls"
+	"encoding/hex"
+	"fmt"
+	"os"
 	"strconv"
 	"sync/atomic"
 	"time"
@@ -13,6 +17,16 @@ import (
 
 // memberCounter generates unique sorted-set members without crypto/rand overhead.
 var memberCounter atomic.Uint64
+
+// instanceID uniquely identifies this process so that sorted-set members
+// cannot collide across gateway instances or restarts.
+var instanceID = generateInstanceID()
+
+func generateInstanceID() string {
+	var rnd [4]byte
+	_, _ = rand.Read(rnd[:])
+	return fmt.Sprintf("%d:%s", os.Getpid(), hex.EncodeToString(rnd[:]))
+}
 
 // slidingWindowScript is a Lua script implementing a sliding window rate
 // limiter using a sorted set. It atomically trims expired entries, checks the
@@ -78,7 +92,7 @@ func (rl *RedisLimiter) Allow(ctx context.Context, key string, limit int, window
 	nowMs := time.Now().UnixMilli()
 	windowMs := window.Milliseconds()
 
-	member := strconv.FormatInt(nowMs, 10) + ":" + strconv.FormatUint(memberCounter.Add(1), 10)
+	member := instanceID + ":" + strconv.FormatInt(nowMs, 10) + ":" + strconv.FormatUint(memberCounter.Add(1), 10)
 	result, err := slidingWindowScript.Run(ctx, rl.client, []string{key}, windowMs, limit, nowMs, member).Int64Slice()
 	if err != nil {
 		return false, 0, time.Time{}, err

@@ -679,6 +679,27 @@ func TestLeakyBucket_DrainPersistsAcrossRejections(t *testing.T) {
 	}
 }
 
+func TestHealthCheck_Success(t *testing.T) {
+	rl := newMiniRedisLimiter(t)
+
+	if err := rl.HealthCheck(context.Background()); err != nil {
+		t.Fatalf("expected healthy ping, got error: %v", err)
+	}
+}
+
+func TestHealthCheck_Failure(t *testing.T) {
+	s := miniredis.RunT(t)
+	rl := NewRedisLimiter(&config.RedisConfig{Addr: s.Addr()})
+	t.Cleanup(func() { _ = rl.Close() })
+
+	// Shut down the server to simulate a connection failure.
+	s.Close()
+
+	if err := rl.HealthCheck(context.Background()); err == nil {
+		t.Fatal("expected error when Redis is down")
+	}
+}
+
 func TestLeakyBucket_LimitOfOne(t *testing.T) {
 	rl, _ := newMiniRedisLeakyLimiter(t)
 	ctx := context.Background()

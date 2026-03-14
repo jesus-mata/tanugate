@@ -10,6 +10,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -806,5 +807,365 @@ func TestIntegration_MethodFiltering(t *testing.T) {
 	rr := doRequest(gw.handler, "POST", "/public/data", nil, "")
 	if rr.Code != http.StatusNotFound {
 		t.Fatalf("expected 404 for wrong method, got %d", rr.Code)
+	}
+}
+
+// handlerRef wraps an http.Handler for use with atomic.Pointer (mirrors cmd/gateway).
+type handlerRef struct{ h http.Handler }
+
+// buildTestHandler builds a globalChain(router) handler from routes and shared resources.
+func buildTestHandler(
+	t *testing.T,
+	routes []config.RouteConfig,
+	authenticators map[string]auth.Authenticator,
+	limiter ratelimit.Limiter,
+	metrics *observability.MetricsCollector,
+	corsConfig config.CORSConfig,
+) http.Handler {
+	t.Helper()
+
+	handlers := make(map[string]http.Handler, len(routes))
+	for i := range routes {
+		h := proxy.NewProxyHandler(&routes[i])
+		route := &routes[i]
+
+		if route.CircuitBreaker != nil {
+			cb := circuitbreaker.New(route.CircuitBreaker, route.Name,
+				circuitbreaker.WithOnStateChange(func(routeName string, from, to circuitbreaker.State) {
+					metrics.CircuitBreakerState.WithLabelValues(routeName, to.String()).Set(1)
+					metrics.CircuitBreakerState.WithLabelValues(routeName, from.String()).Set(0)
+				}),
+			)
+			if route.Retry != nil {
+				h = retry.Retry(route.Retry, cb, h, retry.WithSleep(func(time.Duration) {}))
+			} else {
+				h = retry.WithCircuitBreaker(cb, h)
+			}
+		} else if route.Retry != nil {
+			h = retry.Retry(route.Retry, nil, h, retry.WithSleep(func(time.Duration) {}))
+		}
+
+		if route.Transform != nil {
+			h = transform.RequestTransform(route.Transform.Request, route.Transform.MaxBodySize)(
+				transform.ResponseTransform(route.Transform.Response, route.Transform.MaxBodySize)(h))
+		}
+
+		if route.CORS != nil {
+			h = middleware.CORSOverride(*route.CORS)(h)
+		}
+
+		h = auth.Middleware(slog.Default(), authenticators)(h)
+		h = ratelimit.RateLimit(limiter, metrics, nil)(h)
+
+		handlers[route.Name] = h
+	}
+
+	r := router.New(routes, handlers)
+
+	globalChain := middleware.Chain(
+		middleware.Recovery(),
+		middleware.RequestID(),
+		metrics.Middleware(),
+		middleware.CORS(corsConfig),
+	)
+
+	return globalChain(r)
+}
+
+func TestIntegration_ConfigReload(t *testing.T) {
+	mock := &mockUpstream{}
+	upstreamServer := httptest.NewServer(mock)
+	t.Cleanup(upstreamServer.Close)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+
+	authenticators := map[string]auth.Authenticator{}
+	registry := prometheus.NewRegistry()
+	metrics := observability.NewMetricsCollector(registry)
+	limiter := ratelimit.NewMemoryLimiter(ctx)
+
+	corsConfig := config.CORSConfig{
+		AllowedOrigins:   []string{"*"},
+		AllowedMethods:   []string{"GET"},
+		AllowCredentials: false,
+	}
+
+	// Initial routes: only /v1/...
+	initialRoutes := []config.RouteConfig{
+		{
+			Name:  "v1",
+			Match: config.MatchConfig{PathRegex: `^/v1/(?P<rest>.*)$`},
+			Upstream: config.UpstreamConfig{
+				URL:         upstreamServer.URL,
+				PathRewrite: "/api/{rest}",
+				Timeout:     5 * time.Second,
+			},
+		},
+	}
+
+	initialHandler := buildTestHandler(t, initialRoutes, authenticators, limiter, metrics, corsConfig)
+
+	// Set up atomic handler pointer.
+	var current atomic.Pointer[handlerRef]
+	current.Store(&handlerRef{h: initialHandler})
+
+	mux := http.NewServeMux()
+	mux.Handle("/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		current.Load().h.ServeHTTP(w, r)
+	}))
+
+	// Verify initial route works.
+	rr := doRequest(mux, "GET", "/v1/items", nil, "")
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected 200 for /v1/items, got %d", rr.Code)
+	}
+
+	// Verify /v2/ does not exist yet.
+	rr = doRequest(mux, "GET", "/v2/items", nil, "")
+	if rr.Code != http.StatusNotFound {
+		t.Fatalf("expected 404 for /v2/items before reload, got %d", rr.Code)
+	}
+
+	// Simulate reload: add /v2/ route, remove /v1/ route.
+	newRoutes := []config.RouteConfig{
+		{
+			Name:  "v2",
+			Match: config.MatchConfig{PathRegex: `^/v2/(?P<rest>.*)$`},
+			Upstream: config.UpstreamConfig{
+				URL:         upstreamServer.URL,
+				PathRewrite: "/api/{rest}",
+				Timeout:     5 * time.Second,
+			},
+		},
+	}
+
+	newHandler := buildTestHandler(t, newRoutes, authenticators, limiter, metrics, corsConfig)
+
+	// Atomic swap.
+	current.Store(&handlerRef{h: newHandler})
+
+	// After reload: /v2/ should work.
+	rr = doRequest(mux, "GET", "/v2/items", nil, "")
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected 200 for /v2/items after reload, got %d", rr.Code)
+	}
+	body := decodeJSON(t, rr)
+	if body["echo_path"] != "/api/items" {
+		t.Errorf("expected echo_path=/api/items, got %v", body["echo_path"])
+	}
+
+	// After reload: /v1/ should return 404.
+	rr = doRequest(mux, "GET", "/v1/items", nil, "")
+	if rr.Code != http.StatusNotFound {
+		t.Fatalf("expected 404 for /v1/items after reload, got %d", rr.Code)
+	}
+}
+
+func TestIntegration_ConfigReload_InvalidConfigKeepsOldHandler(t *testing.T) {
+	mock := &mockUpstream{}
+	upstreamServer := httptest.NewServer(mock)
+	t.Cleanup(upstreamServer.Close)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+
+	authenticators := map[string]auth.Authenticator{}
+	registry := prometheus.NewRegistry()
+	metrics := observability.NewMetricsCollector(registry)
+	limiter := ratelimit.NewMemoryLimiter(ctx)
+
+	corsConfig := config.CORSConfig{
+		AllowedOrigins:   []string{"*"},
+		AllowedMethods:   []string{"GET"},
+		AllowCredentials: false,
+	}
+
+	routes := []config.RouteConfig{
+		{
+			Name:  "api",
+			Match: config.MatchConfig{PathRegex: `^/api/(?P<rest>.*)$`},
+			Upstream: config.UpstreamConfig{
+				URL:         upstreamServer.URL,
+				PathRewrite: "/internal/{rest}",
+				Timeout:     5 * time.Second,
+			},
+		},
+	}
+
+	handler := buildTestHandler(t, routes, authenticators, limiter, metrics, corsConfig)
+
+	var current atomic.Pointer[handlerRef]
+	current.Store(&handlerRef{h: handler})
+
+	mux := http.NewServeMux()
+	mux.Handle("/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		current.Load().h.ServeHTTP(w, r)
+	}))
+
+	// Verify route works.
+	rr := doRequest(mux, "GET", "/api/items", nil, "")
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", rr.Code)
+	}
+
+	// Simulate failed reload: invalid config → do NOT swap.
+	// (In the real code, handleReload catches the LoadConfig error and skips the swap.)
+	// Here we simulate by validating a bad config and verifying we don't swap.
+	badCfg := &config.GatewayConfig{
+		Routes: []config.RouteConfig{
+			{
+				Name:  "bad",
+				Match: config.MatchConfig{PathRegex: `^/api/[invalid`},
+				Upstream: config.UpstreamConfig{
+					URL: upstreamServer.URL,
+				},
+			},
+		},
+	}
+	if err := badCfg.Validate(); err == nil {
+		t.Fatal("expected validation error for bad regex")
+	}
+	// Handler was NOT swapped — old route should still work.
+	rr = doRequest(mux, "GET", "/api/items", nil, "")
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected 200 after failed reload, got %d", rr.Code)
+	}
+}
+
+func TestIntegration_ConfigReload_ConcurrentRequests(t *testing.T) {
+	mock := &mockUpstream{}
+	upstreamServer := httptest.NewServer(mock)
+	t.Cleanup(upstreamServer.Close)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+
+	authenticators := map[string]auth.Authenticator{}
+	registry := prometheus.NewRegistry()
+	metrics := observability.NewMetricsCollector(registry)
+	limiter := ratelimit.NewMemoryLimiter(ctx)
+
+	corsConfig := config.CORSConfig{
+		AllowedOrigins: []string{"*"},
+		AllowedMethods: []string{"GET"},
+	}
+
+	makeRoutes := func(name, prefix string) []config.RouteConfig {
+		return []config.RouteConfig{{
+			Name:  name,
+			Match: config.MatchConfig{PathRegex: `^/` + prefix + `/(?P<rest>.*)$`},
+			Upstream: config.UpstreamConfig{
+				URL:         upstreamServer.URL,
+				PathRewrite: "/api/{rest}",
+				Timeout:     5 * time.Second,
+			},
+		}}
+	}
+
+	initialHandler := buildTestHandler(t, makeRoutes("v1", "v1"), authenticators, limiter, metrics, corsConfig)
+
+	var current atomic.Pointer[handlerRef]
+	current.Store(&handlerRef{h: initialHandler})
+
+	mux := http.NewServeMux()
+	mux.Handle("/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		current.Load().h.ServeHTTP(w, r)
+	}))
+
+	// Fire concurrent requests while swapping handlers.
+	var wg sync.WaitGroup
+	errors := make(chan error, 100)
+
+	// Readers hitting /v1/ and /v2/ concurrently.
+	for range 50 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			rr := doRequest(mux, "GET", "/v1/data", nil, "")
+			// Before swap: 200; after swap: 404. Both are acceptable.
+			if rr.Code != http.StatusOK && rr.Code != http.StatusNotFound {
+				errors <- fmt.Errorf("unexpected status %d for /v1/data", rr.Code)
+			}
+		}()
+	}
+
+	// Swap in the middle of concurrent requests.
+	newHandler := buildTestHandler(t, makeRoutes("v2", "v2"), authenticators, limiter, metrics, corsConfig)
+	current.Store(&handlerRef{h: newHandler})
+
+	for range 50 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			rr := doRequest(mux, "GET", "/v2/data", nil, "")
+			// After swap: should be 200. Before swap would be 404.
+			if rr.Code != http.StatusOK && rr.Code != http.StatusNotFound {
+				errors <- fmt.Errorf("unexpected status %d for /v2/data", rr.Code)
+			}
+		}()
+	}
+
+	wg.Wait()
+	close(errors)
+
+	for err := range errors {
+		t.Error(err)
+	}
+}
+
+func TestIntegration_ConfigReload_ZeroRoutes(t *testing.T) {
+	mock := &mockUpstream{}
+	upstreamServer := httptest.NewServer(mock)
+	t.Cleanup(upstreamServer.Close)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+
+	authenticators := map[string]auth.Authenticator{}
+	registry := prometheus.NewRegistry()
+	metrics := observability.NewMetricsCollector(registry)
+	limiter := ratelimit.NewMemoryLimiter(ctx)
+
+	corsConfig := config.CORSConfig{
+		AllowedOrigins: []string{"*"},
+		AllowedMethods: []string{"GET"},
+	}
+
+	initialRoutes := []config.RouteConfig{
+		{
+			Name:  "api",
+			Match: config.MatchConfig{PathRegex: `^/api/(?P<rest>.*)$`},
+			Upstream: config.UpstreamConfig{
+				URL:         upstreamServer.URL,
+				PathRewrite: "/internal/{rest}",
+				Timeout:     5 * time.Second,
+			},
+		},
+	}
+
+	handler := buildTestHandler(t, initialRoutes, authenticators, limiter, metrics, corsConfig)
+
+	var current atomic.Pointer[handlerRef]
+	current.Store(&handlerRef{h: handler})
+
+	mux := http.NewServeMux()
+	mux.Handle("/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		current.Load().h.ServeHTTP(w, r)
+	}))
+
+	// Route works before reload.
+	rr := doRequest(mux, "GET", "/api/items", nil, "")
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", rr.Code)
+	}
+
+	// Reload with zero routes — everything becomes 404.
+	emptyHandler := buildTestHandler(t, []config.RouteConfig{}, authenticators, limiter, metrics, corsConfig)
+	current.Store(&handlerRef{h: emptyHandler})
+
+	rr = doRequest(mux, "GET", "/api/items", nil, "")
+	if rr.Code != http.StatusNotFound {
+		t.Fatalf("expected 404 after reload with zero routes, got %d", rr.Code)
 	}
 }

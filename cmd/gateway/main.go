@@ -5,9 +5,11 @@ import (
 	"flag"
 	"fmt"
 	"log/slog"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
+	"sync/atomic"
 	"syscall"
 
 	"github.com/jesus-mata/tanugate/internal/config"
@@ -24,6 +26,9 @@ import (
 	"github.com/prometheus/client_golang/prometheus/collectors"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 )
+
+// handlerRef wraps an http.Handler for use with atomic.Pointer.
+type handlerRef struct{ h http.Handler }
 
 func main() {
 	configPath := flag.String("config", "config/gateway.yaml", "path to configuration file")
@@ -87,61 +92,21 @@ func main() {
 	registry.MustRegister(collectors.NewGoCollector())
 	metrics := observability.NewMetricsCollector(registry)
 
-	handlers := make(map[string]http.Handler, len(cfg.Routes))
-	for i := range cfg.Routes {
-		h := proxy.NewProxyHandler(&cfg.Routes[i])
-
-		// Wrap with circuit breaker and/or retry.
-		route := &cfg.Routes[i]
-		if route.CircuitBreaker != nil {
-			cb := circuitbreaker.New(route.CircuitBreaker, route.Name,
-				circuitbreaker.WithOnStateChange(func(routeName string, from, to circuitbreaker.State) {
-					slog.Info("circuit breaker state change", "route", routeName, "from", from, "to", to)
-					metrics.CircuitBreakerState.WithLabelValues(routeName, to.String()).Set(1)
-					metrics.CircuitBreakerState.WithLabelValues(routeName, from.String()).Set(0)
-				}),
-			)
-			if route.Retry != nil {
-				h = retry.Retry(route.Retry, cb, h)
-			} else {
-				h = retry.WithCircuitBreaker(cb, h)
-			}
-		} else if route.Retry != nil {
-			h = retry.Retry(route.Retry, nil, h)
-		}
-
-		// Wrap with request/response transforms.
-		if route.Transform != nil {
-			h = transform.RequestTransform(route.Transform.Request, route.Transform.MaxBodySize)(
-				transform.ResponseTransform(route.Transform.Response, route.Transform.MaxBodySize)(h))
-		}
-
-		if cfg.Routes[i].CORS != nil {
-			h = middleware.CORSOverride(*cfg.Routes[i].CORS)(h)
-		}
-
-		// Auth and rate-limit are per-route: the router sets route context
-		// before dispatching, so these middleware can read the matched route.
-		h = auth.Middleware(logger, authenticators)(h)
-		h = ratelimit.RateLimit(limiter, metrics, trustedProxies)(h)
-
-		handlers[cfg.Routes[i].Name] = h
+	handler, err := buildHandler(cfg, limiter, authenticators, metrics, trustedProxies, logger)
+	if err != nil {
+		slog.Error("failed to build handler", "error", err)
+		os.Exit(1)
 	}
 
-	r := router.New(cfg.Routes, handlers)
-
-	globalChain := middleware.Chain(
-		middleware.Recovery(),
-		middleware.RequestID(),
-		middleware.Logging(logger),
-		metrics.Middleware(),
-		middleware.CORS(cfg.CORS),
-	)
+	var current atomic.Pointer[handlerRef]
+	current.Store(&handlerRef{h: handler})
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /health", observability.HealthHandler(cfg, healthChecker))
 	mux.Handle("GET /metrics", promhttp.HandlerFor(registry, promhttp.HandlerOpts{}))
-	mux.Handle("/", globalChain(r))
+	mux.Handle("/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		current.Load().h.ServeHTTP(w, r)
+	}))
 
 	srv := &http.Server{
 		Addr:         fmt.Sprintf("%s:%d", cfg.Server.Host, cfg.Server.Port),
@@ -151,8 +116,8 @@ func main() {
 		IdleTimeout:  cfg.Server.IdleTimeout,
 	}
 
-	quit := make(chan os.Signal, 1)
-	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
+	sigCh := make(chan os.Signal, 1)
+	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM, syscall.SIGHUP)
 
 	go func() {
 		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
@@ -161,7 +126,16 @@ func main() {
 		}
 	}()
 
-	<-quit
+loop:
+	for sig := range sigCh {
+		switch sig {
+		case syscall.SIGHUP:
+			handleReload(*configPath, cfg, &current, limiter, authenticators, metrics, trustedProxies, logger)
+		default:
+			break loop
+		}
+	}
+
 	slog.Info("Shutting down server...")
 
 	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), cfg.Server.ShutdownTimeout)
@@ -189,6 +163,121 @@ func main() {
 	}
 
 	slog.Info("Server stopped")
+}
+
+// buildHandler creates the full handler pipeline from the given configuration
+// and shared resources. It returns an error if handler construction fails
+// (e.g., from invalid regex patterns).
+func buildHandler(
+	cfg *config.GatewayConfig,
+	limiter ratelimit.Limiter,
+	authenticators map[string]auth.Authenticator,
+	metrics *observability.MetricsCollector,
+	trustedProxies []*net.IPNet,
+	logger *slog.Logger,
+) (h http.Handler, err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			err = fmt.Errorf("panic building handler: %v", r)
+		}
+	}()
+
+	handlers := make(map[string]http.Handler, len(cfg.Routes))
+	for i := range cfg.Routes {
+		rh := proxy.NewProxyHandler(&cfg.Routes[i])
+
+		route := &cfg.Routes[i]
+		if route.CircuitBreaker != nil {
+			cb := circuitbreaker.New(route.CircuitBreaker, route.Name,
+				circuitbreaker.WithOnStateChange(func(routeName string, from, to circuitbreaker.State) {
+					slog.Info("circuit breaker state change", "route", routeName, "from", from, "to", to)
+					metrics.CircuitBreakerState.WithLabelValues(routeName, to.String()).Set(1)
+					metrics.CircuitBreakerState.WithLabelValues(routeName, from.String()).Set(0)
+				}),
+			)
+			if route.Retry != nil {
+				rh = retry.Retry(route.Retry, cb, rh)
+			} else {
+				rh = retry.WithCircuitBreaker(cb, rh)
+			}
+		} else if route.Retry != nil {
+			rh = retry.Retry(route.Retry, nil, rh)
+		}
+
+		if route.Transform != nil {
+			rh = transform.RequestTransform(route.Transform.Request, route.Transform.MaxBodySize)(
+				transform.ResponseTransform(route.Transform.Response, route.Transform.MaxBodySize)(rh))
+		}
+
+		if cfg.Routes[i].CORS != nil {
+			rh = middleware.CORSOverride(*cfg.Routes[i].CORS)(rh)
+		}
+
+		rh = auth.Middleware(logger, authenticators)(rh)
+		rh = ratelimit.RateLimit(limiter, metrics, trustedProxies)(rh)
+
+		handlers[cfg.Routes[i].Name] = rh
+	}
+
+	r := router.New(cfg.Routes, handlers)
+
+	globalChain := middleware.Chain(
+		middleware.Recovery(),
+		middleware.RequestID(),
+		middleware.Logging(logger),
+		metrics.Middleware(),
+		middleware.CORS(cfg.CORS),
+	)
+
+	return globalChain(r), nil
+}
+
+// handleReload loads the configuration from disk, validates it, builds a new
+// handler pipeline, and atomically swaps it in. If any step fails, the old
+// handler continues serving and an error is logged.
+func handleReload(
+	configPath string,
+	currentCfg *config.GatewayConfig,
+	current *atomic.Pointer[handlerRef],
+	limiter ratelimit.Limiter,
+	authenticators map[string]auth.Authenticator,
+	metrics *observability.MetricsCollector,
+	trustedProxies []*net.IPNet,
+	logger *slog.Logger,
+) {
+	slog.Info("Received SIGHUP, reloading configuration...", "path", configPath)
+
+	newCfg, err := config.LoadConfig(configPath)
+	if err != nil {
+		slog.Error("config reload failed: invalid configuration, keeping current config", "error", err)
+		return
+	}
+
+	// Warn about non-reloadable changes.
+	for _, w := range config.NonReloadableChanges(currentCfg, newCfg) {
+		slog.Warn("non-reloadable change detected (ignored)", "detail", w)
+	}
+
+	newHandler, err := buildHandler(newCfg, limiter, authenticators, metrics, trustedProxies, logger)
+	if err != nil {
+		slog.Error("config reload failed: could not build handler, keeping current config", "error", err)
+		return
+	}
+
+	current.Store(&handlerRef{h: newHandler})
+
+	// Log what changed.
+	changes := config.DiffSummary(currentCfg, newCfg)
+	if len(changes) == 0 {
+		slog.Info("Configuration reloaded (no reloadable changes detected)")
+	} else {
+		slog.Info("Configuration reloaded successfully", "changes", changes)
+	}
+
+	// Update the current config reference for future reloads.
+	// Copy the reloadable fields into the current config.
+	currentCfg.Routes = newCfg.Routes
+	currentCfg.CORS = newCfg.CORS
 }
 
 func parseLogLevel(level string) slog.Level {

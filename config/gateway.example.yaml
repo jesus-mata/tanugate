@@ -70,6 +70,14 @@ rate_limit:
     addr: "${REDIS_ADDR}"       # e.g. "redis:6379"
     password: "${REDIS_PASSWORD}"
     db: 0
+    pool_size: 10               # Max connections in pool (default: 10)
+    min_idle_conns: 0           # Warm connections kept idle (default: 0)
+    dial_timeout: 5s            # Timeout for establishing new connections
+    read_timeout: 3s            # Timeout for socket reads
+    write_timeout: 3s           # Timeout for socket writes
+    max_retries: 0              # Retries on network errors (default: 0)
+    query_timeout: 100ms        # Per-request timeout for rate limit checks
+    tls_enabled: false          # Use TLS for Redis connections (uses system CA certs)
 
 # -----------------------------------------------------------------------------
 # Auth Providers

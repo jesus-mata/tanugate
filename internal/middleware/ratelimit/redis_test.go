@@ -164,3 +164,17 @@ func TestRedis_Ping(t *testing.T) {
 		t.Fatalf("health check failed: %v", err)
 	}
 }
+
+func TestRedis_QueryTimeout(t *testing.T) {
+	addr := redisAddr(t)
+	rl := NewRedisLimiter(&config.RedisConfig{
+		Addr:         addr,
+		QueryTimeout: 1 * time.Nanosecond,
+	})
+	t.Cleanup(func() { _ = rl.Close() })
+
+	_, _, _, err := rl.Allow(context.Background(), "test:timeout:"+t.Name(), 10, 10*time.Second)
+	if err == nil {
+		t.Fatal("expected error due to 1ns query timeout")
+	}
+}

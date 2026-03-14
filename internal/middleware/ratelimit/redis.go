@@ -2,12 +2,17 @@ package ratelimit
 
 import (
 	"context"
+	"crypto/tls"
+	"strconv"
+	"sync/atomic"
 	"time"
 
 	"github.com/jesus-mata/tanugate/internal/config"
-	"github.com/google/uuid"
 	"github.com/redis/go-redis/v9"
 )
+
+// memberCounter generates unique sorted-set members without crypto/rand overhead.
+var memberCounter atomic.Uint64
 
 // slidingWindowScript is a Lua script implementing a sliding window rate
 // limiter using a sorted set. It atomically trims expired entries, checks the
@@ -36,27 +41,44 @@ end
 // RedisLimiter implements the Limiter interface using a Redis-backed sliding
 // window algorithm.
 type RedisLimiter struct {
-	client *redis.Client
+	client       *redis.Client
+	queryTimeout time.Duration
 }
 
 // NewRedisLimiter creates a RedisLimiter connected to the Redis instance
 // described by cfg.
 func NewRedisLimiter(cfg *config.RedisConfig) *RedisLimiter {
-	client := redis.NewClient(&redis.Options{
-		Addr:     cfg.Addr,
-		Password: cfg.Password,
-		DB:       cfg.DB,
-	})
-	return &RedisLimiter{client: client}
+	opts := &redis.Options{
+		Addr:         cfg.Addr,
+		Password:     cfg.Password,
+		DB:           cfg.DB,
+		PoolSize:     cfg.PoolSize,
+		MinIdleConns: cfg.MinIdleConns,
+		DialTimeout:  cfg.DialTimeout,
+		ReadTimeout:  cfg.ReadTimeout,
+		WriteTimeout: cfg.WriteTimeout,
+		MaxRetries:   cfg.MaxRetries,
+	}
+	if cfg.TLSEnabled {
+		opts.TLSConfig = &tls.Config{MinVersion: tls.VersionTLS12}
+	}
+	client := redis.NewClient(opts)
+	return &RedisLimiter{client: client, queryTimeout: cfg.QueryTimeout}
 }
 
 // Allow checks whether a request identified by key should be allowed under the
 // given limit and window using a Redis sliding window.
 func (rl *RedisLimiter) Allow(ctx context.Context, key string, limit int, window time.Duration) (bool, int, time.Time, error) {
+	if rl.queryTimeout > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, rl.queryTimeout)
+		defer cancel()
+	}
+
 	nowMs := time.Now().UnixMilli()
 	windowMs := window.Milliseconds()
 
-	member := uuid.New().String()
+	member := strconv.FormatInt(nowMs, 10) + ":" + strconv.FormatUint(memberCounter.Add(1), 10)
 	result, err := slidingWindowScript.Run(ctx, rl.client, []string{key}, windowMs, limit, nowMs, member).Int64Slice()
 	if err != nil {
 		return false, 0, time.Time{}, err

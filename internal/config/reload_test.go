@@ -105,6 +105,56 @@ func TestNonReloadableChanges_RedisChange(t *testing.T) {
 	}
 }
 
+func TestNonReloadableChanges_RedisNewFieldsChange(t *testing.T) {
+	base := RedisConfig{
+		Addr:         "localhost:6379",
+		Password:     "pass",
+		DB:           0,
+		PoolSize:     10,
+		MinIdleConns: 2,
+		DialTimeout:  5 * time.Second,
+		ReadTimeout:  3 * time.Second,
+		WriteTimeout: 3 * time.Second,
+		MaxRetries:   1,
+		QueryTimeout: 100 * time.Millisecond,
+		TLSEnabled:   false,
+	}
+
+	// Changing PoolSize alone should trigger a warning.
+	changed := base
+	changed.PoolSize = 20
+
+	old := &GatewayConfig{RateLimit: RateLimitGlobalConfig{Backend: "redis", Redis: &base}}
+	new := &GatewayConfig{RateLimit: RateLimitGlobalConfig{Backend: "redis", Redis: &changed}}
+
+	warnings := NonReloadableChanges(old, new)
+	found := false
+	for _, w := range warnings {
+		if strings.Contains(w, "rate_limit.redis") {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("expected warning when only PoolSize changed, got %v", warnings)
+	}
+
+	// Changing TLSEnabled alone should also trigger a warning.
+	changed2 := base
+	changed2.TLSEnabled = true
+	new2 := &GatewayConfig{RateLimit: RateLimitGlobalConfig{Backend: "redis", Redis: &changed2}}
+
+	warnings2 := NonReloadableChanges(old, new2)
+	found2 := false
+	for _, w := range warnings2 {
+		if strings.Contains(w, "rate_limit.redis") {
+			found2 = true
+		}
+	}
+	if !found2 {
+		t.Errorf("expected warning when only TLSEnabled changed, got %v", warnings2)
+	}
+}
+
 func TestNonReloadableChanges_AuthProviderChange(t *testing.T) {
 	old := &GatewayConfig{
 		AuthProviders: map[string]AuthProvider{

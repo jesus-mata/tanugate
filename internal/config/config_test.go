@@ -1,6 +1,7 @@
 package config
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -41,6 +42,14 @@ rate_limit:
     addr: "localhost:6379"
     password: "redispass"
     db: 2
+    pool_size: 20
+    min_idle_conns: 5
+    dial_timeout: 10s
+    read_timeout: 5s
+    write_timeout: 5s
+    max_retries: 3
+    query_timeout: 200ms
+    tls_enabled: true
 
 auth_providers:
   main_jwt:
@@ -189,6 +198,30 @@ routes:
 	}
 	if cfg.RateLimit.Redis.DB != 2 {
 		t.Errorf("RateLimit.Redis.DB = %d, want %d", cfg.RateLimit.Redis.DB, 2)
+	}
+	if cfg.RateLimit.Redis.PoolSize != 20 {
+		t.Errorf("RateLimit.Redis.PoolSize = %d, want 20", cfg.RateLimit.Redis.PoolSize)
+	}
+	if cfg.RateLimit.Redis.MinIdleConns != 5 {
+		t.Errorf("RateLimit.Redis.MinIdleConns = %d, want 5", cfg.RateLimit.Redis.MinIdleConns)
+	}
+	if cfg.RateLimit.Redis.DialTimeout != 10*time.Second {
+		t.Errorf("RateLimit.Redis.DialTimeout = %v, want 10s", cfg.RateLimit.Redis.DialTimeout)
+	}
+	if cfg.RateLimit.Redis.ReadTimeout != 5*time.Second {
+		t.Errorf("RateLimit.Redis.ReadTimeout = %v, want 5s", cfg.RateLimit.Redis.ReadTimeout)
+	}
+	if cfg.RateLimit.Redis.WriteTimeout != 5*time.Second {
+		t.Errorf("RateLimit.Redis.WriteTimeout = %v, want 5s", cfg.RateLimit.Redis.WriteTimeout)
+	}
+	if cfg.RateLimit.Redis.MaxRetries != 3 {
+		t.Errorf("RateLimit.Redis.MaxRetries = %d, want 3", cfg.RateLimit.Redis.MaxRetries)
+	}
+	if cfg.RateLimit.Redis.QueryTimeout != 200*time.Millisecond {
+		t.Errorf("RateLimit.Redis.QueryTimeout = %v, want 200ms", cfg.RateLimit.Redis.QueryTimeout)
+	}
+	if !cfg.RateLimit.Redis.TLSEnabled {
+		t.Errorf("RateLimit.Redis.TLSEnabled = false, want true")
 	}
 
 	// AuthProviders
@@ -727,5 +760,181 @@ routes:
 	}
 	if !strings.Contains(err.Error(), "duplicate") {
 		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestValidate_RateLimit_InvalidRequestsPerWindow(t *testing.T) {
+	for _, rpw := range []int{0, -5} {
+		yaml := fmt.Sprintf(`
+routes:
+  - name: "test"
+    match:
+      path_regex: "^/test"
+    upstream:
+      url: "http://localhost:8080"
+    rate_limit:
+      requests_per_window: %d
+      window: 1m
+`, rpw)
+		dir := t.TempDir()
+		cfgPath := filepath.Join(dir, "config.yaml")
+		if err := os.WriteFile(cfgPath, []byte(yaml), 0644); err != nil {
+			t.Fatalf("write: %v", err)
+		}
+		_, err := LoadConfig(cfgPath)
+		if err == nil {
+			t.Fatalf("expected error for requests_per_window=%d", rpw)
+		}
+		if !strings.Contains(err.Error(), "requests_per_window must be > 0") {
+			t.Fatalf("unexpected error: %v", err)
+		}
+	}
+}
+
+func TestValidate_RateLimit_InvalidWindow(t *testing.T) {
+	yaml := `
+routes:
+  - name: "test"
+    match:
+      path_regex: "^/test"
+    upstream:
+      url: "http://localhost:8080"
+    rate_limit:
+      requests_per_window: 10
+      window: 0s
+`
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "config.yaml")
+	if err := os.WriteFile(cfgPath, []byte(yaml), 0644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	_, err := LoadConfig(cfgPath)
+	if err == nil {
+		t.Fatal("expected error for zero window")
+	}
+	if !strings.Contains(err.Error(), "window must be > 0") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestValidate_RateLimit_InvalidKeySource(t *testing.T) {
+	for _, ks := range []string{"invalid", "header:"} {
+		yaml := fmt.Sprintf(`
+routes:
+  - name: "test"
+    match:
+      path_regex: "^/test"
+    upstream:
+      url: "http://localhost:8080"
+    rate_limit:
+      requests_per_window: 10
+      window: 1m
+      key_source: %q
+`, ks)
+		dir := t.TempDir()
+		cfgPath := filepath.Join(dir, "config.yaml")
+		if err := os.WriteFile(cfgPath, []byte(yaml), 0644); err != nil {
+			t.Fatalf("write: %v", err)
+		}
+		_, err := LoadConfig(cfgPath)
+		if err == nil {
+			t.Fatalf("expected error for key_source=%q", ks)
+		}
+		if !strings.Contains(err.Error(), "invalid key_source") {
+			t.Fatalf("unexpected error: %v", err)
+		}
+	}
+}
+
+func TestValidate_RateLimit_ValidConfig(t *testing.T) {
+	for _, ks := range []string{"", "ip", "header:X-Tenant-ID"} {
+		keySrc := ""
+		if ks != "" {
+			keySrc = fmt.Sprintf("      key_source: %q\n", ks)
+		}
+		yaml := fmt.Sprintf(`
+routes:
+  - name: "test"
+    match:
+      path_regex: "^/test"
+    upstream:
+      url: "http://localhost:8080"
+    rate_limit:
+      requests_per_window: 100
+      window: 1m
+%s`, keySrc)
+		dir := t.TempDir()
+		cfgPath := filepath.Join(dir, "config.yaml")
+		if err := os.WriteFile(cfgPath, []byte(yaml), 0644); err != nil {
+			t.Fatalf("write: %v", err)
+		}
+		_, err := LoadConfig(cfgPath)
+		if err != nil {
+			t.Fatalf("unexpected error for key_source=%q: %v", ks, err)
+		}
+	}
+}
+
+func TestLoadConfig_RedisDefaults(t *testing.T) {
+	yaml := `
+rate_limit:
+  backend: "redis"
+  redis:
+    addr: "localhost:6379"
+routes: []
+`
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "config.yaml")
+	if err := os.WriteFile(cfgPath, []byte(yaml), 0644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	cfg, err := LoadConfig(cfgPath)
+	if err != nil {
+		t.Fatalf("LoadConfig returned error: %v", err)
+	}
+	r := cfg.RateLimit.Redis
+	if r.PoolSize != 10 {
+		t.Errorf("PoolSize = %d, want 10", r.PoolSize)
+	}
+	if r.DialTimeout != 5*time.Second {
+		t.Errorf("DialTimeout = %v, want 5s", r.DialTimeout)
+	}
+	if r.ReadTimeout != 3*time.Second {
+		t.Errorf("ReadTimeout = %v, want 3s", r.ReadTimeout)
+	}
+	if r.WriteTimeout != 3*time.Second {
+		t.Errorf("WriteTimeout = %v, want 3s", r.WriteTimeout)
+	}
+	if r.QueryTimeout != 100*time.Millisecond {
+		t.Errorf("QueryTimeout = %v, want 100ms", r.QueryTimeout)
+	}
+}
+
+func TestLoadConfig_RedisDefaultsNotAppliedForMemoryBackend(t *testing.T) {
+	yaml := `
+rate_limit:
+  backend: "memory"
+  redis:
+    addr: "localhost:6379"
+routes: []
+`
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "config.yaml")
+	if err := os.WriteFile(cfgPath, []byte(yaml), 0644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	cfg, err := LoadConfig(cfgPath)
+	if err != nil {
+		t.Fatalf("LoadConfig returned error: %v", err)
+	}
+	r := cfg.RateLimit.Redis
+	if r.PoolSize != 0 {
+		t.Errorf("PoolSize = %d, want 0 (no defaults for memory backend)", r.PoolSize)
+	}
+	if r.DialTimeout != 0 {
+		t.Errorf("DialTimeout = %v, want 0 (no defaults for memory backend)", r.DialTimeout)
+	}
+	if r.QueryTimeout != 0 {
+		t.Errorf("QueryTimeout = %v, want 0 (no defaults for memory backend)", r.QueryTimeout)
 	}
 }

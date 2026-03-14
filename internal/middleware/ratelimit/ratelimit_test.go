@@ -14,6 +14,7 @@ import (
 	"github.com/jesus-mata/tanugate/internal/observability"
 	"github.com/jesus-mata/tanugate/internal/router"
 	"github.com/prometheus/client_golang/prometheus"
+	dto "github.com/prometheus/client_model/go"
 )
 
 // mockLimiter implements Limiter for testing.
@@ -338,6 +339,41 @@ func TestRateLimit_LimiterError_FailOpen(t *testing.T) {
 	}
 	if rec.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d", rec.Code)
+	}
+}
+
+func TestRateLimit_LimiterError_FailOpen_MetricIncremented(t *testing.T) {
+	ml := &mockLimiter{err: errors.New("redis connection refused")}
+	metrics := newTestMetrics()
+
+	handler := RateLimit(ml, metrics, nil)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	req := httptest.NewRequest(http.MethodGet, "/api/test", nil)
+	req.RemoteAddr = "1.2.3.4:1234"
+	req = withRoute(req, &config.RouteConfig{
+		Name: "svc",
+		RateLimit: &config.RouteLimitConfig{
+			RequestsPerWindow: 10,
+			Window:            time.Minute,
+			KeySource:         "ip",
+		},
+	})
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", rec.Code)
+	}
+
+	// Verify the fail-open metric was incremented.
+	m := &dto.Metric{}
+	if err := metrics.RateLimitErrors.WithLabelValues("svc").Write(m); err != nil {
+		t.Fatalf("failed to read metric: %v", err)
+	}
+	if got := m.GetCounter().GetValue(); got != 1 {
+		t.Fatalf("expected RateLimitErrors counter=1, got %v", got)
 	}
 }
 

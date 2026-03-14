@@ -938,3 +938,82 @@ routes: []
 		t.Errorf("QueryTimeout = %v, want 0 (no defaults for memory backend)", r.QueryTimeout)
 	}
 }
+
+func TestValidate_RateLimit_InvalidAlgorithm(t *testing.T) {
+	yaml := `
+routes:
+  - name: "test"
+    match:
+      path_regex: "^/test"
+    upstream:
+      url: "http://localhost:8080"
+    rate_limit:
+      requests_per_window: 10
+      window: 1m
+      algorithm: "invalid"
+`
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "config.yaml")
+	if err := os.WriteFile(cfgPath, []byte(yaml), 0644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	_, err := LoadConfig(cfgPath)
+	if err == nil {
+		t.Fatal("expected error for invalid algorithm")
+	}
+	if !strings.Contains(err.Error(), "invalid algorithm") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestValidate_RateLimit_ValidAlgorithms(t *testing.T) {
+	for _, alg := range []string{"sliding_window", "leaky_bucket"} {
+		yaml := fmt.Sprintf(`
+routes:
+  - name: "test"
+    match:
+      path_regex: "^/test"
+    upstream:
+      url: "http://localhost:8080"
+    rate_limit:
+      requests_per_window: 100
+      window: 1m
+      algorithm: %q
+`, alg)
+		dir := t.TempDir()
+		cfgPath := filepath.Join(dir, "config.yaml")
+		if err := os.WriteFile(cfgPath, []byte(yaml), 0644); err != nil {
+			t.Fatalf("write: %v", err)
+		}
+		_, err := LoadConfig(cfgPath)
+		if err != nil {
+			t.Fatalf("unexpected error for algorithm=%q: %v", alg, err)
+		}
+	}
+}
+
+func TestLoadConfig_RateLimitAlgorithmDefault(t *testing.T) {
+	yaml := `
+routes:
+  - name: "test"
+    match:
+      path_regex: "^/test"
+    upstream:
+      url: "http://localhost:8080"
+    rate_limit:
+      requests_per_window: 100
+      window: 1m
+`
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "config.yaml")
+	if err := os.WriteFile(cfgPath, []byte(yaml), 0644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	cfg, err := LoadConfig(cfgPath)
+	if err != nil {
+		t.Fatalf("LoadConfig returned error: %v", err)
+	}
+	if cfg.Routes[0].RateLimit.Algorithm != "sliding_window" {
+		t.Fatalf("expected default algorithm=sliding_window, got %q", cfg.Routes[0].RateLimit.Algorithm)
+	}
+}

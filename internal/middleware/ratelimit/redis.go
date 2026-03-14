@@ -52,11 +52,49 @@ else
 end
 `)
 
+// leakyBucketScript is a Lua script implementing a leaky bucket rate limiter
+// using a Redis hash. The hash stores two fields: "level" (current water level
+// as a float) and "last_update" (timestamp in milliseconds). Requests leak at
+// a constant rate of capacity/window_ms. Each request adds 1 to the level if
+// room exists, otherwise it is rejected.
+var leakyBucketScript = redis.NewScript(`
+local key = KEYS[1]
+local capacity = tonumber(ARGV[1])
+local window_ms = tonumber(ARGV[2])
+local now_ms = tonumber(ARGV[3])
+local leak_rate = capacity / window_ms
+
+local data = redis.call('HMGET', key, 'level', 'last_update')
+local level = tonumber(data[1]) or 0
+local last_update = tonumber(data[2]) or now_ms
+
+local elapsed = now_ms - last_update
+if elapsed > 0 then
+    local leaked = elapsed * leak_rate
+    level = math.max(level - leaked, 0)
+end
+
+if level + 1 <= capacity then
+    level = level + 1
+    redis.call('HSET', key, 'level', tostring(level), 'last_update', tostring(now_ms))
+    redis.call('PEXPIRE', key, window_ms)
+    local remaining = math.floor(capacity - level)
+    local reset_ms = now_ms + math.ceil((level) / leak_rate)
+    return {1, remaining, reset_ms}
+else
+    redis.call('HSET', key, 'level', tostring(level), 'last_update', tostring(now_ms))
+    redis.call('PEXPIRE', key, window_ms)
+    local reset_ms = now_ms + math.ceil(1 / leak_rate)
+    return {0, 0, reset_ms}
+end
+`)
+
 // RedisLimiter implements the Limiter interface using a Redis-backed sliding
 // window algorithm.
 type RedisLimiter struct {
 	client       *redis.Client
 	queryTimeout time.Duration
+	now          func() time.Time
 }
 
 // NewRedisLimiter creates a RedisLimiter connected to the Redis instance
@@ -77,23 +115,46 @@ func NewRedisLimiter(cfg *config.RedisConfig) *RedisLimiter {
 		opts.TLSConfig = &tls.Config{MinVersion: tls.VersionTLS12}
 	}
 	client := redis.NewClient(opts)
-	return &RedisLimiter{client: client, queryTimeout: cfg.QueryTimeout}
+	return &RedisLimiter{client: client, queryTimeout: cfg.QueryTimeout, now: time.Now}
 }
 
 // Allow checks whether a request identified by key should be allowed under the
-// given limit and window using a Redis sliding window.
-func (rl *RedisLimiter) Allow(ctx context.Context, key string, limit int, window time.Duration) (bool, int, time.Time, error) {
+// given limit and window. It dispatches to the appropriate algorithm
+// implementation based on the algorithm parameter.
+func (rl *RedisLimiter) Allow(ctx context.Context, key string, limit int, window time.Duration, algorithm Algorithm) (bool, int, time.Time, error) {
 	if rl.queryTimeout > 0 {
 		var cancel context.CancelFunc
 		ctx, cancel = context.WithTimeout(ctx, rl.queryTimeout)
 		defer cancel()
 	}
 
-	nowMs := time.Now().UnixMilli()
+	nowMs := rl.now().UnixMilli()
 	windowMs := window.Milliseconds()
 
+	switch algorithm {
+	case AlgorithmLeakyBucket:
+		return rl.allowLeakyBucket(ctx, key, limit, windowMs, nowMs)
+	default:
+		return rl.allowSlidingWindow(ctx, key, limit, windowMs, nowMs)
+	}
+}
+
+func (rl *RedisLimiter) allowSlidingWindow(ctx context.Context, key string, limit int, windowMs, nowMs int64) (bool, int, time.Time, error) {
 	member := instanceID + ":" + strconv.FormatInt(nowMs, 10) + ":" + strconv.FormatUint(memberCounter.Add(1), 10)
 	result, err := slidingWindowScript.Run(ctx, rl.client, []string{key}, windowMs, limit, nowMs, member).Int64Slice()
+	if err != nil {
+		return false, 0, time.Time{}, err
+	}
+
+	allowed := result[0] == 1
+	remaining := int(result[1])
+	resetAt := time.UnixMilli(result[2])
+
+	return allowed, remaining, resetAt, nil
+}
+
+func (rl *RedisLimiter) allowLeakyBucket(ctx context.Context, key string, capacity int, windowMs, nowMs int64) (bool, int, time.Time, error) {
+	result, err := leakyBucketScript.Run(ctx, rl.client, []string{key}, capacity, windowMs, nowMs).Int64Slice()
 	if err != nil {
 		return false, 0, time.Time{}, err
 	}

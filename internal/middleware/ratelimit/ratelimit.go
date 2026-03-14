@@ -15,9 +15,17 @@ import (
 	"github.com/jesus-mata/tanugate/internal/router"
 )
 
+// Algorithm identifies the rate limiting strategy used by a Limiter.
+type Algorithm string
+
+const (
+	AlgorithmSlidingWindow Algorithm = "sliding_window"
+	AlgorithmLeakyBucket   Algorithm = "leaky_bucket"
+)
+
 // Limiter checks whether a request identified by key should be allowed.
 type Limiter interface {
-	Allow(ctx context.Context, key string, limit int, window time.Duration) (allowed bool, remaining int, resetAt time.Time, err error)
+	Allow(ctx context.Context, key string, limit int, window time.Duration, algorithm Algorithm) (allowed bool, remaining int, resetAt time.Time, err error)
 }
 
 // ParseTrustedProxies converts a list of CIDR strings (or bare IPs) into
@@ -63,13 +71,15 @@ func RateLimit(limiter Limiter, metrics *observability.MetricsCollector, trusted
 
 			rl := mr.Config.RateLimit
 			extracted := extractKey(r, rl.KeySource, trustedProxies)
-			compositeKey := "rl:" + mr.Config.Name + ":" + extracted
+			algorithm := Algorithm(rl.Algorithm)
+			compositeKey := "rl:" + string(algorithm) + ":" + mr.Config.Name + ":" + extracted
 
 			allowed, remaining, resetAt, err := limiter.Allow(
 				r.Context(),
 				compositeKey,
 				rl.RequestsPerWindow,
 				rl.Window,
+				algorithm,
 			)
 
 			if err != nil {

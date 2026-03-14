@@ -42,7 +42,7 @@ func NewMemoryLimiter(ctx context.Context) *MemoryLimiter {
 // Allow checks whether a request identified by key should be allowed under the
 // given limit and window. It uses token bucket semantics: tokens refill at a
 // steady rate of limit/window and each request consumes one token.
-func (ml *MemoryLimiter) Allow(_ context.Context, key string, limit int, window time.Duration) (bool, int, time.Time, error) {
+func (ml *MemoryLimiter) Allow(_ context.Context, key string, limit int, window time.Duration, _ Algorithm) (bool, int, time.Time, error) {
 	now := ml.now()
 	refillRate := float64(limit) / window.Seconds()
 

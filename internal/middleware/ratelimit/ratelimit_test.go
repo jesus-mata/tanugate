@@ -19,15 +19,17 @@ import (
 
 // mockLimiter implements Limiter for testing.
 type mockLimiter struct {
-	allowed   bool
-	remaining int
-	resetAt   time.Time
-	err       error
-	lastKey   string
+	allowed       bool
+	remaining     int
+	resetAt       time.Time
+	err           error
+	lastKey       string
+	lastAlgorithm Algorithm
 }
 
-func (m *mockLimiter) Allow(_ context.Context, key string, _ int, _ time.Duration) (bool, int, time.Time, error) {
+func (m *mockLimiter) Allow(_ context.Context, key string, _ int, _ time.Duration, algorithm Algorithm) (bool, int, time.Time, error) {
 	m.lastKey = key
+	m.lastAlgorithm = algorithm
 	return m.allowed, m.remaining, m.resetAt, m.err
 }
 
@@ -393,14 +395,46 @@ func TestRateLimit_CompositeKey(t *testing.T) {
 			RequestsPerWindow: 100,
 			Window:            time.Minute,
 			KeySource:         "ip",
+			Algorithm:         "sliding_window",
 		},
 	})
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
 
-	expected := "rl:users-api:10.0.0.5"
+	expected := "rl:sliding_window:users-api:10.0.0.5"
 	if ml.lastKey != expected {
 		t.Fatalf("expected composite key %q, got %q", expected, ml.lastKey)
+	}
+}
+
+func TestRateLimit_PassesAlgorithmToLimiter(t *testing.T) {
+	resetTime := time.Now().Add(60 * time.Second)
+	ml := &mockLimiter{allowed: true, remaining: 9, resetAt: resetTime}
+
+	handler := RateLimit(ml, nil, nil)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	req := httptest.NewRequest(http.MethodGet, "/api/test", nil)
+	req.RemoteAddr = "10.0.0.5:9999"
+	req = withRoute(req, &config.RouteConfig{
+		Name: "lb-route",
+		RateLimit: &config.RouteLimitConfig{
+			RequestsPerWindow: 50,
+			Window:            time.Minute,
+			KeySource:         "ip",
+			Algorithm:         "leaky_bucket",
+		},
+	})
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if ml.lastAlgorithm != AlgorithmLeakyBucket {
+		t.Fatalf("expected algorithm %q, got %q", AlgorithmLeakyBucket, ml.lastAlgorithm)
+	}
+	expectedKey := "rl:leaky_bucket:lb-route:10.0.0.5"
+	if ml.lastKey != expectedKey {
+		t.Fatalf("expected composite key %q, got %q", expectedKey, ml.lastKey)
 	}
 }
 

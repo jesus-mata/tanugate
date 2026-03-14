@@ -60,9 +60,10 @@ cors:
 
 # -----------------------------------------------------------------------------
 # Rate Limiting
-# Backend: "memory" (token bucket, single-node) or "redis" (sliding window, multi-node)
+# Backend: "memory" (token bucket, single-node) or "redis" (sliding window or leaky bucket, multi-node)
 # Memory pros: zero deps, fast. Cons: not shared across instances.
-# Redis pros: shared state, sliding window accuracy. Cons: network hop, Redis dependency.
+# Redis pros: shared state, algorithm choice. Cons: network hop, Redis dependency.
+# Per-route algorithm (Redis only): "sliding_window" (default) | "leaky_bucket"
 # -----------------------------------------------------------------------------
 rate_limit:
   backend: "memory"             # "memory" | "redis"
@@ -159,6 +160,7 @@ routes:
       requests: 100               # Max requests per window
       window: 60s                  # Window duration
       key_func: "claim:sub"       # Key extraction: "ip" | "header:<name>" | "claim:<name>"
+      algorithm: "sliding_window" # "sliding_window" (default) | "leaky_bucket" (Redis only)
     retry:
       max_attempts: 3             # Total attempts (1 = no retry)
       initial_delay: 100ms        # Delay before first retry
@@ -207,6 +209,7 @@ routes:
       requests: 50
       window: 60s
       key_func: "header:X-API-Key"
+      algorithm: "leaky_bucket"   # Smooth constant-rate draining
     transform:
       request:
         body:

@@ -78,6 +78,9 @@ func RateLimit(limiter Limiter, metrics *observability.MetricsCollector, trusted
 					"key", compositeKey,
 					"error", err,
 				)
+				if metrics != nil {
+					metrics.RateLimitErrors.WithLabelValues(mr.Config.Name).Inc()
+				}
 				next.ServeHTTP(w, r)
 				return
 			}

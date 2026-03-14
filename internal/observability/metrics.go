@@ -18,6 +18,7 @@ type MetricsCollector struct {
 	ResponseSize        *prometheus.HistogramVec
 	CircuitBreakerState *prometheus.GaugeVec
 	RateLimitRejected   *prometheus.CounterVec
+	RateLimitErrors     *prometheus.CounterVec
 	UpstreamErrors      *prometheus.CounterVec
 }
 
@@ -69,6 +70,13 @@ func NewMetricsCollector(reg prometheus.Registerer) *MetricsCollector {
 			},
 			[]string{"route"},
 		),
+		RateLimitErrors: prometheus.NewCounterVec(
+			prometheus.CounterOpts{
+				Name: "gateway_rate_limit_errors_total",
+				Help: "Total number of rate limiter backend errors (fail-open events).",
+			},
+			[]string{"route"},
+		),
 		UpstreamErrors: prometheus.NewCounterVec(
 			prometheus.CounterOpts{
 				Name: "gateway_upstream_errors_total",
@@ -85,6 +93,7 @@ func NewMetricsCollector(reg prometheus.Registerer) *MetricsCollector {
 		m.ResponseSize,
 		m.CircuitBreakerState,
 		m.RateLimitRejected,
+		m.RateLimitErrors,
 		m.UpstreamErrors,
 	)
 

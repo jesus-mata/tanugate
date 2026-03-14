@@ -55,9 +55,17 @@ type RateLimitGlobalConfig struct {
 
 // RedisConfig holds Redis connection settings.
 type RedisConfig struct {
-	Addr     string `yaml:"addr"`
-	Password string `yaml:"password"`
-	DB       int    `yaml:"db"`
+	Addr         string        `yaml:"addr"`
+	Password     string        `yaml:"password"`
+	DB           int           `yaml:"db"`
+	PoolSize     int           `yaml:"pool_size"`
+	MinIdleConns int           `yaml:"min_idle_conns"`
+	DialTimeout  time.Duration `yaml:"dial_timeout"`
+	ReadTimeout  time.Duration `yaml:"read_timeout"`
+	WriteTimeout time.Duration `yaml:"write_timeout"`
+	MaxRetries   int           `yaml:"max_retries"`
+	QueryTimeout time.Duration `yaml:"query_timeout"`
+	TLSEnabled   bool          `yaml:"tls_enabled"`
 }
 
 // AuthProvider describes a single authentication provider.
@@ -247,6 +255,25 @@ func applyDefaults(cfg *GatewayConfig) {
 		cfg.RateLimit.Backend = "memory"
 	}
 
+	if cfg.RateLimit.Backend == "redis" && cfg.RateLimit.Redis != nil {
+		r := cfg.RateLimit.Redis
+		if r.PoolSize == 0 {
+			r.PoolSize = 10
+		}
+		if r.DialTimeout == 0 {
+			r.DialTimeout = 5 * time.Second
+		}
+		if r.ReadTimeout == 0 {
+			r.ReadTimeout = 3 * time.Second
+		}
+		if r.WriteTimeout == 0 {
+			r.WriteTimeout = 3 * time.Second
+		}
+		if r.QueryTimeout == 0 {
+			r.QueryTimeout = 100 * time.Millisecond
+		}
+	}
+
 	for i := range cfg.Routes {
 		if cfg.Routes[i].Upstream.Timeout == 0 {
 			cfg.Routes[i].Upstream.Timeout = 30 * time.Second
@@ -265,6 +292,20 @@ func (cfg *GatewayConfig) Validate() error {
 		if route.Match.PathRegex != "" {
 			if _, err := regexp.Compile(route.Match.PathRegex); err != nil {
 				errs = append(errs, fmt.Sprintf("route %q: invalid path_regex %q: %v", route.Name, route.Match.PathRegex, err))
+			}
+		}
+
+		if rl := route.RateLimit; rl != nil {
+			if rl.RequestsPerWindow <= 0 {
+				errs = append(errs, fmt.Sprintf("route %q: requests_per_window must be > 0, got %d", route.Name, rl.RequestsPerWindow))
+			}
+			if rl.Window <= 0 {
+				errs = append(errs, fmt.Sprintf("route %q: window must be > 0, got %v", route.Name, rl.Window))
+			}
+			if rl.KeySource != "" && rl.KeySource != "ip" {
+				if !strings.HasPrefix(rl.KeySource, "header:") || strings.TrimPrefix(rl.KeySource, "header:") == "" {
+					errs = append(errs, fmt.Sprintf("route %q: invalid key_source %q (must be \"ip\", \"header:<name>\", or empty)", route.Name, rl.KeySource))
+				}
 			}
 		}
 
@@ -360,7 +401,11 @@ func redisConfigEqual(a, b *RedisConfig) bool {
 	if a == nil || b == nil {
 		return false
 	}
-	return a.Addr == b.Addr && a.Password == b.Password && a.DB == b.DB
+	return a.Addr == b.Addr && a.Password == b.Password && a.DB == b.DB &&
+		a.PoolSize == b.PoolSize && a.MinIdleConns == b.MinIdleConns &&
+		a.DialTimeout == b.DialTimeout && a.ReadTimeout == b.ReadTimeout &&
+		a.WriteTimeout == b.WriteTimeout && a.MaxRetries == b.MaxRetries &&
+		a.QueryTimeout == b.QueryTimeout && a.TLSEnabled == b.TLSEnabled
 }
 
 func authProvidersEqual(a, b map[string]AuthProvider) bool {

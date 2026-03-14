@@ -67,6 +67,13 @@ func main() {
 			os.Exit(1)
 		}
 		rl := ratelimit.NewRedisLimiter(cfg.RateLimit.Redis)
+		if err := rl.HealthCheck(ctx); err != nil {
+			slog.Error("failed to connect to Redis for rate limiting",
+				"addr", cfg.RateLimit.Redis.Addr,
+				"error", err,
+			)
+			os.Exit(1)
+		}
 		limiter = rl
 		healthChecker = rl
 		slog.Info("Rate limit backend: redis", "addr", cfg.RateLimit.Redis.Addr)

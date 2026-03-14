@@ -35,7 +35,7 @@ func effectiveMaxBody(configured int64) int64 {
 func writeJSON(w http.ResponseWriter, status int, errCode, message string) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
-	json.NewEncoder(w).Encode(map[string]string{
+	_ = json.NewEncoder(w).Encode(map[string]string{
 		"error":   errCode,
 		"message": message,
 	})
@@ -169,7 +169,7 @@ func RequestTransform(cfg *config.DirectionTransform, maxBodySize int64) middlew
 			if cfg.Body != nil && isJSON(r.Header.Get("Content-Type")) {
 				limit := effectiveMaxBody(maxBodySize)
 				body, err := io.ReadAll(io.LimitReader(r.Body, limit+1))
-				r.Body.Close()
+				_ = r.Body.Close()
 				if err != nil {
 					writeJSON(w, http.StatusBadGateway, "bad_gateway", "failed to read request body")
 					return
@@ -250,7 +250,7 @@ func ResponseTransform(cfg *config.DirectionTransform, maxBodySize int64) middle
 				}
 			}
 			w.WriteHeader(buf.statusCode)
-			w.Write(body)
+			_, _ = w.Write(body)
 		})
 	}
 }

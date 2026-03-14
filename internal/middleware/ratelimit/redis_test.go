@@ -24,7 +24,7 @@ func newTestRedisLimiter(t *testing.T) *RedisLimiter {
 	t.Helper()
 	addr := redisAddr(t)
 	rl := NewRedisLimiter(&config.RedisConfig{Addr: addr})
-	t.Cleanup(func() { rl.Close() })
+	t.Cleanup(func() { _ = rl.Close() })
 	return rl
 }
 
@@ -83,7 +83,7 @@ func TestRedis_SlidingWindow(t *testing.T) {
 
 	// Exhaust limit.
 	for i := 0; i < limit; i++ {
-		rl.Allow(ctx, key, limit, window)
+		_, _, _, _ = rl.Allow(ctx, key, limit, window)
 	}
 
 	// Should be rejected.
@@ -138,7 +138,7 @@ func TestRedis_KeyExpiry(t *testing.T) {
 	key := "test:expiry:" + t.Name()
 	window := 1 * time.Second
 
-	rl.Allow(ctx, key, 10, window)
+	_, _, _, _ = rl.Allow(ctx, key, 10, window)
 
 	// Wait for key to expire.
 	time.Sleep(window + 500*time.Millisecond)

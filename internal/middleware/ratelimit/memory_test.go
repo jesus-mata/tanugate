@@ -67,7 +67,7 @@ func TestMemory_TokenRefill(t *testing.T) {
 
 	// Consume all tokens.
 	for i := 0; i < limit; i++ {
-		ml.Allow(ctx, "key1", limit, window)
+		_, _, _, _ = ml.Allow(ctx, "key1", limit, window)
 	}
 
 	// Advance half the window → should refill ~5 tokens.
@@ -94,7 +94,7 @@ func TestMemory_FullRefillAfterWindow(t *testing.T) {
 	window := time.Minute
 
 	for i := 0; i < limit; i++ {
-		ml.Allow(ctx, "key1", limit, window)
+		_, _, _, _ = ml.Allow(ctx, "key1", limit, window)
 	}
 
 	// Advance full window.
@@ -170,7 +170,7 @@ func TestMemory_CleanupEvictsExpired(t *testing.T) {
 	now := time.Now()
 	ml.now = func() time.Time { return now }
 
-	ml.Allow(ctx, "stale-key", 10, time.Minute)
+	_, _, _, _ = ml.Allow(ctx, "stale-key", 10, time.Minute)
 
 	// Advance past eviction TTL.
 	ml.now = func() time.Time { return now.Add(evictionTTL + time.Second) }
@@ -196,7 +196,7 @@ func TestMemory_CleanupPreservesActive(t *testing.T) {
 
 	// Use all tokens.
 	for i := 0; i < 5; i++ {
-		ml.Allow(ctx, "active-key", 5, time.Minute)
+		_, _, _, _ = ml.Allow(ctx, "active-key", 5, time.Minute)
 	}
 
 	// Advance, but within eviction TTL.

@@ -172,7 +172,7 @@ func TestMiddleware_Returns401(t *testing.T) {
 	}
 
 	var body map[string]string
-	json.NewDecoder(w.Body).Decode(&body)
+	_ = json.NewDecoder(w.Body).Decode(&body)
 	if body["message"] != "authentication failed" {
 		t.Fatalf("expected message=authentication failed, got %s", body["message"])
 	}
@@ -329,7 +329,7 @@ func TestMiddleware_MultipleProviders_AllFail(t *testing.T) {
 		t.Fatalf("expected 401, got %d", w.Code)
 	}
 	var body map[string]string
-	json.NewDecoder(w.Body).Decode(&body)
+	_ = json.NewDecoder(w.Body).Decode(&body)
 	if body["message"] != "authentication failed" {
 		t.Fatalf("expected message=authentication failed, got %s", body["message"])
 	}

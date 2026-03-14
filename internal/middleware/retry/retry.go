@@ -98,7 +98,7 @@ func (h *retryHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if r.Body != nil {
 		var err error
 		bodyBytes, err = io.ReadAll(io.LimitReader(r.Body, maxRetryBodySize+1))
-		r.Body.Close()
+		_ = r.Body.Close()
 		if err != nil {
 			writeJSON(w, http.StatusBadGateway, "bad_gateway", "failed to read request body")
 			return
@@ -196,13 +196,13 @@ func copyRecorderToWriter(rec *httptest.ResponseRecorder, w http.ResponseWriter)
 		}
 	}
 	w.WriteHeader(rec.Code)
-	w.Write(rec.Body.Bytes())
+	_, _ = w.Write(rec.Body.Bytes())
 }
 
 func writeJSON(w http.ResponseWriter, status int, errCode, message string) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
-	json.NewEncoder(w).Encode(map[string]string{
+	_ = json.NewEncoder(w).Encode(map[string]string{
 		"error":   errCode,
 		"message": message,
 	})

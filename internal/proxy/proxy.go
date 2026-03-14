@@ -29,7 +29,7 @@ func NewProxyHandler(routeCfg *config.RouteConfig) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusBadGateway)
-			json.NewEncoder(w).Encode(map[string]string{
+			_ = json.NewEncoder(w).Encode(map[string]string{
 				"error":   "bad_gateway",
 				"message": "Upstream service unavailable",
 			})
@@ -76,7 +76,7 @@ func NewProxyHandler(routeCfg *config.RouteConfig) http.Handler {
 			)
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusBadGateway)
-			json.NewEncoder(w).Encode(map[string]string{
+			_ = json.NewEncoder(w).Encode(map[string]string{
 				"error":   "bad_gateway",
 				"message": "Upstream service unavailable",
 			})

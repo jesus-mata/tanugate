@@ -13,76 +13,76 @@ import (
 
 // GatewayConfig is the top-level configuration for the API gateway.
 type GatewayConfig struct {
-	Server        ServerConfig            `yaml:"server"`
-	Logging       LoggingConfig           `yaml:"logging"`
-	CORS          CORSConfig              `yaml:"cors"`
-	RateLimit     RateLimitGlobalConfig   `yaml:"rate_limit"`
-	AuthProviders map[string]AuthProvider `yaml:"auth_providers"`
-	Routes        []RouteConfig           `yaml:"routes"`
+	Server        ServerConfig            `yaml:"server" jsonschema:"description=HTTP server settings"`
+	Logging       LoggingConfig           `yaml:"logging" jsonschema:"description=Logging configuration"`
+	CORS          CORSConfig              `yaml:"cors" jsonschema:"description=Global CORS settings"`
+	RateLimit     RateLimitGlobalConfig   `yaml:"rate_limit" jsonschema:"description=Global rate limiting settings"`
+	AuthProviders map[string]AuthProvider `yaml:"auth_providers" jsonschema:"description=Named authentication providers"`
+	Routes        []RouteConfig           `yaml:"routes" jsonschema:"required,description=Route definitions"`
 }
 
 // ServerConfig holds HTTP server settings.
 type ServerConfig struct {
-	Host            string        `yaml:"host"`
-	Port            int           `yaml:"port"`
-	ReadTimeout     time.Duration `yaml:"read_timeout"`
-	WriteTimeout    time.Duration `yaml:"write_timeout"`
-	IdleTimeout     time.Duration `yaml:"idle_timeout"`
-	ShutdownTimeout time.Duration `yaml:"shutdown_timeout"`
-	TrustedProxies  []string      `yaml:"trusted_proxies"`
+	Host            string        `yaml:"host" jsonschema:"default=0.0.0.0,description=Bind address"`
+	Port            int           `yaml:"port" jsonschema:"default=8080,minimum=1,maximum=65535,description=Listen port"`
+	ReadTimeout     time.Duration `yaml:"read_timeout" jsonschema:"description=Max time to read the entire request (e.g. 30s)"`
+	WriteTimeout    time.Duration `yaml:"write_timeout" jsonschema:"description=Max time to write the response (e.g. 30s)"`
+	IdleTimeout     time.Duration `yaml:"idle_timeout" jsonschema:"description=Max time for idle keep-alive connections (e.g. 120s)"`
+	ShutdownTimeout time.Duration `yaml:"shutdown_timeout" jsonschema:"description=Graceful shutdown timeout (e.g. 15s)"`
+	TrustedProxies  []string      `yaml:"trusted_proxies" jsonschema:"description=CIDR ranges or IPs of trusted reverse proxies"`
 }
 
 // LoggingConfig holds logging settings.
 type LoggingConfig struct {
-	Level string `yaml:"level"`
+	Level string `yaml:"level" jsonschema:"default=info,enum=debug,enum=info,enum=warn,enum=error,description=Log level"`
 }
 
 // CORSConfig holds cross-origin resource sharing settings.
 type CORSConfig struct {
-	AllowedOrigins   []string `yaml:"allowed_origins"`
-	AllowedMethods   []string `yaml:"allowed_methods"`
-	AllowedHeaders   []string `yaml:"allowed_headers"`
-	ExposedHeaders   []string `yaml:"exposed_headers"`
-	AllowCredentials bool     `yaml:"allow_credentials"`
-	MaxAge           int      `yaml:"max_age"`
+	AllowedOrigins   []string `yaml:"allowed_origins" jsonschema:"description=Origins allowed to make cross-origin requests"`
+	AllowedMethods   []string `yaml:"allowed_methods" jsonschema:"description=HTTP methods allowed for CORS requests"`
+	AllowedHeaders   []string `yaml:"allowed_headers" jsonschema:"description=Headers allowed in CORS requests"`
+	ExposedHeaders   []string `yaml:"exposed_headers" jsonschema:"description=Headers exposed to the browser"`
+	AllowCredentials bool     `yaml:"allow_credentials" jsonschema:"description=Whether credentials are allowed"`
+	MaxAge           int      `yaml:"max_age" jsonschema:"minimum=0,description=Max age in seconds for preflight cache"`
 }
 
 // RateLimitGlobalConfig holds global rate-limiting settings.
 type RateLimitGlobalConfig struct {
-	Backend string       `yaml:"backend"`
-	Redis   *RedisConfig `yaml:"redis"`
+	Backend string       `yaml:"backend" jsonschema:"default=memory,enum=memory,enum=redis,description=Rate limit storage backend"`
+	Redis   *RedisConfig `yaml:"redis" jsonschema:"description=Redis connection settings (required when backend is redis)"`
 }
 
 // RedisConfig holds Redis connection settings.
 type RedisConfig struct {
-	Addr         string        `yaml:"addr"`
-	Password     string        `yaml:"password"`
-	DB           int           `yaml:"db"`
-	PoolSize     int           `yaml:"pool_size"`
-	MinIdleConns int           `yaml:"min_idle_conns"`
-	DialTimeout  time.Duration `yaml:"dial_timeout"`
-	ReadTimeout  time.Duration `yaml:"read_timeout"`
-	WriteTimeout time.Duration `yaml:"write_timeout"`
-	MaxRetries   int           `yaml:"max_retries"`
-	QueryTimeout time.Duration `yaml:"query_timeout"`
-	TLSEnabled   bool          `yaml:"tls_enabled"`
+	Addr         string        `yaml:"addr" jsonschema:"required,description=Redis address (host:port)"`
+	Password     string        `yaml:"password" jsonschema:"description=Redis password"`
+	DB           int           `yaml:"db" jsonschema:"minimum=0,description=Redis database number"`
+	PoolSize     int           `yaml:"pool_size" jsonschema:"default=10,minimum=0,description=Connection pool size"`
+	MinIdleConns int           `yaml:"min_idle_conns" jsonschema:"minimum=0,description=Minimum idle connections"`
+	DialTimeout  time.Duration `yaml:"dial_timeout" jsonschema:"description=Connection dial timeout (e.g. 5s)"`
+	ReadTimeout  time.Duration `yaml:"read_timeout" jsonschema:"description=Read timeout (e.g. 3s)"`
+	WriteTimeout time.Duration `yaml:"write_timeout" jsonschema:"description=Write timeout (e.g. 3s)"`
+	MaxRetries   int           `yaml:"max_retries" jsonschema:"minimum=0,description=Max retries on failure"`
+	QueryTimeout time.Duration `yaml:"query_timeout" jsonschema:"description=Query timeout (e.g. 100ms)"`
+	TLSEnabled   bool          `yaml:"tls_enabled" jsonschema:"description=Enable TLS for Redis connection"`
 }
 
 // AuthProvider describes a single authentication provider.
 type AuthProvider struct {
-	Type   string        `yaml:"type"`
-	JWT    *JWTConfig    `yaml:"jwt"`
-	APIKey *APIKeyConfig `yaml:"api_key"`
-	OIDC   *OIDCConfig   `yaml:"oidc"`
+	Type   string        `yaml:"type" jsonschema:"required,enum=jwt,enum=apikey,enum=oidc,description=Authentication provider type"`
+	JWT    *JWTConfig    `yaml:"jwt" jsonschema:"description=JWT authentication settings"`
+	APIKey *APIKeyConfig `yaml:"api_key" jsonschema:"description=API key authentication settings"`
+	OIDC   *OIDCConfig   `yaml:"oidc" jsonschema:"description=OpenID Connect settings"`
 }
 
 // JWTConfig holds JWT authentication settings.
 type JWTConfig struct {
-	Secret        string `yaml:"secret"`
-	PublicKeyFile string `yaml:"public_key_file"`
-	Algorithm     string `yaml:"algorithm"`
-	Issuer        string `yaml:"issuer"`
-	Audience      string `yaml:"audience"`
+	Secret        string `yaml:"secret" jsonschema:"description=HMAC shared secret"`
+	PublicKeyFile string `yaml:"public_key_file" jsonschema:"description=Path to RSA/ECDSA public key file"`
+	Algorithm     string `yaml:"algorithm" jsonschema:"enum=HS256,enum=HS384,enum=HS512,enum=RS256,enum=RS384,enum=RS512,enum=ES256,enum=ES384,enum=ES512,description=JWT signing algorithm"`
+	Issuer        string `yaml:"issuer" jsonschema:"description=Expected token issuer"`
+	Audience      string `yaml:"audience" jsonschema:"description=Expected token audience"`
 }
 
 // APIKeyConfig holds API-key authentication settings.
@@ -111,9 +111,9 @@ type OIDCConfig struct {
 
 // RouteConfig describes a single route handled by the gateway.
 type RouteConfig struct {
-	Name           string                `yaml:"name"`
-	Match          MatchConfig           `yaml:"match"`
-	Upstream       UpstreamConfig        `yaml:"upstream"`
+	Name           string                `yaml:"name" jsonschema:"required"`
+	Match          MatchConfig           `yaml:"match" jsonschema:"required"`
+	Upstream       UpstreamConfig        `yaml:"upstream" jsonschema:"required"`
 	CORS           *CORSConfig           `yaml:"cors"`
 	Auth           *RouteAuthConfig      `yaml:"auth"`
 	RateLimit      *RouteLimitConfig     `yaml:"rate_limit"`
@@ -124,13 +124,13 @@ type RouteConfig struct {
 
 // MatchConfig holds request-matching criteria for a route.
 type MatchConfig struct {
-	PathRegex string   `yaml:"path_regex"`
+	PathRegex string   `yaml:"path_regex" jsonschema:"required"`
 	Methods   []string `yaml:"methods"`
 }
 
 // UpstreamConfig holds upstream target settings for a route.
 type UpstreamConfig struct {
-	URL         string        `yaml:"url"`
+	URL         string        `yaml:"url" jsonschema:"required"`
 	PathRewrite string        `yaml:"path_rewrite"`
 	Timeout     time.Duration `yaml:"timeout"`
 }
@@ -143,32 +143,32 @@ type RouteAuthConfig struct {
 
 // RouteLimitConfig holds per-route rate-limiting settings.
 type RouteLimitConfig struct {
-	RequestsPerWindow int           `yaml:"requests_per_window"`
-	Window            time.Duration `yaml:"window"`
-	KeySource         string        `yaml:"key_source"`
-	Algorithm         string        `yaml:"algorithm"`
+	RequestsPerWindow int           `yaml:"requests_per_window" jsonschema:"minimum=1,description=Max requests allowed per window"`
+	Window            time.Duration `yaml:"window" jsonschema:"description=Rate limit window duration (e.g. 1m)"`
+	KeySource         string        `yaml:"key_source" jsonschema:"description=Key source for rate limiting: ip or header:<name>"`
+	Algorithm         string        `yaml:"algorithm" jsonschema:"default=sliding_window,enum=sliding_window,enum=leaky_bucket,description=Rate limiting algorithm"`
 }
 
 // RetryConfig holds retry behaviour settings for a route.
 type RetryConfig struct {
-	MaxRetries           int           `yaml:"max_retries"`
-	InitialDelay         time.Duration `yaml:"initial_delay"`
-	Multiplier           float64       `yaml:"multiplier"`
-	RetryableStatusCodes []int         `yaml:"retryable_status_codes"`
+	MaxRetries           int           `yaml:"max_retries" jsonschema:"minimum=1,description=Maximum number of retry attempts"`
+	InitialDelay         time.Duration `yaml:"initial_delay" jsonschema:"description=Initial delay before first retry (e.g. 100ms)"`
+	Multiplier           float64       `yaml:"multiplier" jsonschema:"minimum=1,description=Backoff multiplier for subsequent retries"`
+	RetryableStatusCodes []int         `yaml:"retryable_status_codes" jsonschema:"description=HTTP status codes that trigger a retry"`
 }
 
 // CircuitBreakerConfig holds circuit-breaker settings for a route.
 type CircuitBreakerConfig struct {
-	FailureThreshold int           `yaml:"failure_threshold"`
-	SuccessThreshold int           `yaml:"success_threshold"`
-	Timeout          time.Duration `yaml:"timeout"`
+	FailureThreshold int           `yaml:"failure_threshold" jsonschema:"minimum=1,description=Failures before opening the circuit"`
+	SuccessThreshold int           `yaml:"success_threshold" jsonschema:"minimum=1,description=Successes in half-open state before closing"`
+	Timeout          time.Duration `yaml:"timeout" jsonschema:"description=Time to wait before transitioning to half-open (e.g. 30s)"`
 }
 
 // TransformConfig holds request/response transformation rules for a route.
 type TransformConfig struct {
-	Request     *DirectionTransform `yaml:"request"`
-	Response    *DirectionTransform `yaml:"response"`
-	MaxBodySize int64               `yaml:"max_body_size"`
+	Request     *DirectionTransform `yaml:"request" jsonschema:"description=Request transformations"`
+	Response    *DirectionTransform `yaml:"response" jsonschema:"description=Response transformations"`
+	MaxBodySize int64               `yaml:"max_body_size" jsonschema:"minimum=0,description=Maximum body size in bytes for transformation"`
 }
 
 // DirectionTransform describes header and body transformations applied in one
@@ -215,6 +215,12 @@ func LoadConfig(path string) (*GatewayConfig, error) {
 		return value
 	})
 
+	// Validate raw YAML against schema before unmarshaling.
+	// This catches unknown fields (typos) and invalid values before defaults.
+	if schemaErrs := ValidateRawConfig([]byte(resolved)); len(schemaErrs) > 0 {
+		return nil, fmt.Errorf("config validation failed: %s", strings.Join(schemaErrs, "; "))
+	}
+
 	var cfg GatewayConfig
 	if err := yaml.Unmarshal([]byte(resolved), &cfg); err != nil {
 		return nil, fmt.Errorf("unmarshaling config: %w", err)
@@ -222,8 +228,9 @@ func LoadConfig(path string) (*GatewayConfig, error) {
 
 	applyDefaults(&cfg)
 
-	if err := cfg.Validate(); err != nil {
-		return nil, err
+	// Semantic validation on post-defaults struct.
+	if semanticErrs := cfg.semanticErrors(); len(semanticErrs) > 0 {
+		return nil, fmt.Errorf("config validation failed: %s", strings.Join(semanticErrs, "; "))
 	}
 
 	return &cfg, nil
@@ -290,9 +297,22 @@ func applyDefaults(cfg *GatewayConfig) {
 // found, or nil when the configuration is valid.
 func (cfg *GatewayConfig) Validate() error {
 	var errs []string
+	errs = append(errs, validateAgainstSchema(cfg)...)
+	errs = append(errs, cfg.semanticErrors()...)
+	if len(errs) > 0 {
+		return fmt.Errorf("config validation failed: %s", strings.Join(errs, "; "))
+	}
+	return nil
+}
+
+// semanticErrors returns human-readable error strings for logic errors
+// that the JSON Schema cannot express (regex compilation, auth provider
+// references, etc.). It also provides route-name-aware messages for
+// constraints that the schema checks structurally.
+func (cfg *GatewayConfig) semanticErrors() []string {
+	var errs []string
 
 	for _, route := range cfg.Routes {
-		// Validate path regex compiles.
 		if route.Match.PathRegex != "" {
 			if _, err := regexp.Compile(route.Match.PathRegex); err != nil {
 				errs = append(errs, fmt.Sprintf("route %q: invalid path_regex %q: %v", route.Name, route.Match.PathRegex, err))
@@ -306,13 +326,16 @@ func (cfg *GatewayConfig) Validate() error {
 			if rl.Window <= 0 {
 				errs = append(errs, fmt.Sprintf("route %q: window must be > 0, got %v", route.Name, rl.Window))
 			}
+			switch rl.Algorithm {
+			case "sliding_window", "leaky_bucket":
+				// valid
+			default:
+				errs = append(errs, fmt.Sprintf("route %q: unsupported algorithm %q, must be sliding_window or leaky_bucket", route.Name, rl.Algorithm))
+			}
 			if rl.KeySource != "" && rl.KeySource != "ip" {
 				if !strings.HasPrefix(rl.KeySource, "header:") || strings.TrimPrefix(rl.KeySource, "header:") == "" {
 					errs = append(errs, fmt.Sprintf("route %q: invalid key_source %q (must be \"ip\", \"header:<name>\", or empty)", route.Name, rl.KeySource))
 				}
-			}
-			if rl.Algorithm != "sliding_window" && rl.Algorithm != "leaky_bucket" {
-				errs = append(errs, fmt.Sprintf("route %q: invalid algorithm %q (must be \"sliding_window\" or \"leaky_bucket\")", route.Name, rl.Algorithm))
 			}
 		}
 
@@ -349,10 +372,7 @@ func (cfg *GatewayConfig) Validate() error {
 		}
 	}
 
-	if len(errs) > 0 {
-		return fmt.Errorf("config validation failed: %s", strings.Join(errs, "; "))
-	}
-	return nil
+	return errs
 }
 
 // NonReloadableChanges compares old and new configurations and returns a list

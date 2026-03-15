@@ -785,7 +785,7 @@ routes:
 		if err == nil {
 			t.Fatalf("expected error for requests_per_window=%d", rpw)
 		}
-		if !strings.Contains(err.Error(), "requests_per_window must be > 0") {
+		if !strings.Contains(err.Error(), "requests_per_window") {
 			t.Fatalf("unexpected error: %v", err)
 		}
 	}
@@ -961,7 +961,7 @@ routes:
 	if err == nil {
 		t.Fatal("expected error for invalid algorithm")
 	}
-	if !strings.Contains(err.Error(), "invalid algorithm") {
+	if !strings.Contains(err.Error(), "algorithm") {
 		t.Fatalf("unexpected error: %v", err)
 	}
 }
@@ -1015,5 +1015,45 @@ routes:
 	}
 	if cfg.Routes[0].RateLimit.Algorithm != "sliding_window" {
 		t.Fatalf("expected default algorithm=sliding_window, got %q", cfg.Routes[0].RateLimit.Algorithm)
+	}
+}
+
+func TestLoadConfig_PortZeroRejected(t *testing.T) {
+	yamlContent := `
+server:
+  port: 0
+routes: []
+`
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "config.yaml")
+	if err := os.WriteFile(cfgPath, []byte(yamlContent), 0644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	_, err := LoadConfig(cfgPath)
+	if err == nil {
+		t.Fatal("expected error for port=0, got nil")
+	}
+	if !strings.Contains(err.Error(), "port") {
+		t.Fatalf("expected error mentioning port, got: %v", err)
+	}
+}
+
+func TestLoadConfig_UnknownFieldRejected(t *testing.T) {
+	yamlContent := `
+servr:
+  port: 8080
+routes: []
+`
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "config.yaml")
+	if err := os.WriteFile(cfgPath, []byte(yamlContent), 0644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	_, err := LoadConfig(cfgPath)
+	if err == nil {
+		t.Fatal("expected error for unknown field 'servr', got nil")
+	}
+	if !strings.Contains(err.Error(), "additional properties") {
+		t.Fatalf("expected error mentioning additional properties, got: %v", err)
 	}
 }

@@ -1,4 +1,4 @@
-.PHONY: build test lint vet fmt run docker-build docker-push clean
+.PHONY: build test lint vet fmt run docker-build docker-push clean schema
 
 BINARY=gateway
 
@@ -28,3 +28,6 @@ docker-push: docker-build
 
 clean:
 	rm -rf bin/
+
+schema: build
+	./bin/$(BINARY) schema > gateway-schema.json

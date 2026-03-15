@@ -50,7 +50,7 @@ func main() {
 func runValidate() {
 	fs := flag.NewFlagSet("validate", flag.ExitOnError)
 	configPath := fs.String("config", "config/gateway.yaml", "path to configuration file")
-	fs.Parse(os.Args[2:])
+	_ = fs.Parse(os.Args[2:])
 
 	_, err := config.LoadConfig(*configPath)
 	if err != nil {

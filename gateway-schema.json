@@ -1,0 +1,669 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/jesus-mata/tanugate/internal/config/gateway-config",
+  "$defs": {
+    "APIKeyConfig": {
+      "properties": {
+        "header": {
+          "type": "string"
+        },
+        "keys": {
+          "items": {
+            "$ref": "#/$defs/APIKeyEntry"
+          },
+          "type": "array"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object"
+    },
+    "APIKeyEntry": {
+      "properties": {
+        "key": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object"
+    },
+    "AuthProvider": {
+      "properties": {
+        "type": {
+          "type": "string",
+          "enum": [
+            "jwt",
+            "apikey",
+            "oidc"
+          ],
+          "description": "Authentication provider type"
+        },
+        "jwt": {
+          "$ref": "#/$defs/JWTConfig",
+          "description": "JWT authentication settings"
+        },
+        "api_key": {
+          "$ref": "#/$defs/APIKeyConfig",
+          "description": "API key authentication settings"
+        },
+        "oidc": {
+          "$ref": "#/$defs/OIDCConfig",
+          "description": "OpenID Connect settings"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "type"
+      ]
+    },
+    "BodyTransform": {
+      "properties": {
+        "inject_fields": {
+          "type": "object"
+        },
+        "strip_fields": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "rename_keys": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "type": "object"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object"
+    },
+    "CORSConfig": {
+      "properties": {
+        "allowed_origins": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array",
+          "description": "Origins allowed to make cross-origin requests"
+        },
+        "allowed_methods": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array",
+          "description": "HTTP methods allowed for CORS requests"
+        },
+        "allowed_headers": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array",
+          "description": "Headers allowed in CORS requests"
+        },
+        "exposed_headers": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array",
+          "description": "Headers exposed to the browser"
+        },
+        "allow_credentials": {
+          "type": "boolean",
+          "description": "Whether credentials are allowed"
+        },
+        "max_age": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Max age in seconds for preflight cache"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object"
+    },
+    "CircuitBreakerConfig": {
+      "properties": {
+        "failure_threshold": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "Failures before opening the circuit"
+        },
+        "success_threshold": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "Successes in half-open state before closing"
+        },
+        "timeout": {
+          "type": "string",
+          "pattern": "^([0-9]+(ns|us|µs|ms|s|m|h))+$",
+          "description": "Time to wait before transitioning to half-open (e.g. 30s)",
+          "examples": [
+            "30s",
+            "1m",
+            "500ms",
+            "2h30m"
+          ]
+        }
+      },
+      "additionalProperties": false,
+      "type": "object"
+    },
+    "DirectionTransform": {
+      "properties": {
+        "headers": {
+          "$ref": "#/$defs/HeaderTransform"
+        },
+        "body": {
+          "$ref": "#/$defs/BodyTransform"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object"
+    },
+    "HeaderTransform": {
+      "properties": {
+        "add": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "type": "object"
+        },
+        "remove": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "rename": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "type": "object"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object"
+    },
+    "JWTConfig": {
+      "properties": {
+        "secret": {
+          "type": "string",
+          "description": "HMAC shared secret"
+        },
+        "public_key_file": {
+          "type": "string",
+          "description": "Path to RSA/ECDSA public key file"
+        },
+        "algorithm": {
+          "type": "string",
+          "enum": [
+            "HS256",
+            "HS384",
+            "HS512",
+            "RS256",
+            "RS384",
+            "RS512",
+            "ES256",
+            "ES384",
+            "ES512"
+          ],
+          "description": "JWT signing algorithm"
+        },
+        "issuer": {
+          "type": "string",
+          "description": "Expected token issuer"
+        },
+        "audience": {
+          "type": "string",
+          "description": "Expected token audience"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object"
+    },
+    "LoggingConfig": {
+      "properties": {
+        "level": {
+          "type": "string",
+          "enum": [
+            "debug",
+            "info",
+            "warn",
+            "error"
+          ],
+          "description": "Log level",
+          "default": "info"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object"
+    },
+    "MatchConfig": {
+      "properties": {
+        "path_regex": {
+          "type": "string"
+        },
+        "methods": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "path_regex"
+      ]
+    },
+    "OIDCConfig": {
+      "properties": {
+        "issuer_url": {
+          "type": "string"
+        },
+        "jwks_url": {
+          "type": "string"
+        },
+        "introspection_url": {
+          "type": "string"
+        },
+        "client_id": {
+          "type": "string"
+        },
+        "client_secret": {
+          "type": "string"
+        },
+        "audience": {
+          "type": "string"
+        },
+        "allowed_algorithms": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "skip_issuer_check": {
+          "type": "boolean"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object"
+    },
+    "RateLimitGlobalConfig": {
+      "properties": {
+        "backend": {
+          "type": "string",
+          "enum": [
+            "memory",
+            "redis"
+          ],
+          "description": "Rate limit storage backend",
+          "default": "memory"
+        },
+        "redis": {
+          "$ref": "#/$defs/RedisConfig",
+          "description": "Redis connection settings (required when backend is redis)"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object"
+    },
+    "RedisConfig": {
+      "properties": {
+        "addr": {
+          "type": "string",
+          "description": "Redis address (host:port)"
+        },
+        "password": {
+          "type": "string",
+          "description": "Redis password"
+        },
+        "db": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Redis database number"
+        },
+        "pool_size": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Connection pool size",
+          "default": 10
+        },
+        "min_idle_conns": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Minimum idle connections"
+        },
+        "dial_timeout": {
+          "type": "string",
+          "pattern": "^([0-9]+(ns|us|µs|ms|s|m|h))+$",
+          "description": "Connection dial timeout (e.g. 5s)",
+          "examples": [
+            "30s",
+            "1m",
+            "500ms",
+            "2h30m"
+          ]
+        },
+        "read_timeout": {
+          "type": "string",
+          "pattern": "^([0-9]+(ns|us|µs|ms|s|m|h))+$",
+          "description": "Read timeout (e.g. 3s)",
+          "examples": [
+            "30s",
+            "1m",
+            "500ms",
+            "2h30m"
+          ]
+        },
+        "write_timeout": {
+          "type": "string",
+          "pattern": "^([0-9]+(ns|us|µs|ms|s|m|h))+$",
+          "description": "Write timeout (e.g. 3s)",
+          "examples": [
+            "30s",
+            "1m",
+            "500ms",
+            "2h30m"
+          ]
+        },
+        "max_retries": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Max retries on failure"
+        },
+        "query_timeout": {
+          "type": "string",
+          "pattern": "^([0-9]+(ns|us|µs|ms|s|m|h))+$",
+          "description": "Query timeout (e.g. 100ms)",
+          "examples": [
+            "30s",
+            "1m",
+            "500ms",
+            "2h30m"
+          ]
+        },
+        "tls_enabled": {
+          "type": "boolean",
+          "description": "Enable TLS for Redis connection"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "addr"
+      ]
+    },
+    "RetryConfig": {
+      "properties": {
+        "max_retries": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "Maximum number of retry attempts"
+        },
+        "initial_delay": {
+          "type": "string",
+          "pattern": "^([0-9]+(ns|us|µs|ms|s|m|h))+$",
+          "description": "Initial delay before first retry (e.g. 100ms)",
+          "examples": [
+            "30s",
+            "1m",
+            "500ms",
+            "2h30m"
+          ]
+        },
+        "multiplier": {
+          "type": "number",
+          "minimum": 1,
+          "description": "Backoff multiplier for subsequent retries"
+        },
+        "retryable_status_codes": {
+          "items": {
+            "type": "integer"
+          },
+          "type": "array",
+          "description": "HTTP status codes that trigger a retry"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object"
+    },
+    "RouteAuthConfig": {
+      "properties": {
+        "providers": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object"
+    },
+    "RouteConfig": {
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "match": {
+          "$ref": "#/$defs/MatchConfig"
+        },
+        "upstream": {
+          "$ref": "#/$defs/UpstreamConfig"
+        },
+        "cors": {
+          "$ref": "#/$defs/CORSConfig"
+        },
+        "auth": {
+          "$ref": "#/$defs/RouteAuthConfig"
+        },
+        "rate_limit": {
+          "$ref": "#/$defs/RouteLimitConfig"
+        },
+        "retry": {
+          "$ref": "#/$defs/RetryConfig"
+        },
+        "circuit_breaker": {
+          "$ref": "#/$defs/CircuitBreakerConfig"
+        },
+        "transform": {
+          "$ref": "#/$defs/TransformConfig"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "name",
+        "match",
+        "upstream"
+      ]
+    },
+    "RouteLimitConfig": {
+      "properties": {
+        "requests_per_window": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "Max requests allowed per window"
+        },
+        "window": {
+          "type": "string",
+          "pattern": "^([0-9]+(ns|us|µs|ms|s|m|h))+$",
+          "description": "Rate limit window duration (e.g. 1m)",
+          "examples": [
+            "30s",
+            "1m",
+            "500ms",
+            "2h30m"
+          ]
+        },
+        "key_source": {
+          "type": "string",
+          "description": "Key source for rate limiting: ip or header:\u003cname\u003e"
+        },
+        "algorithm": {
+          "type": "string",
+          "enum": [
+            "sliding_window",
+            "leaky_bucket"
+          ],
+          "description": "Rate limiting algorithm",
+          "default": "sliding_window"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object"
+    },
+    "ServerConfig": {
+      "properties": {
+        "host": {
+          "type": "string",
+          "description": "Bind address",
+          "default": "0.0.0.0"
+        },
+        "port": {
+          "type": "integer",
+          "maximum": 65535,
+          "minimum": 1,
+          "description": "Listen port",
+          "default": 8080
+        },
+        "read_timeout": {
+          "type": "string",
+          "pattern": "^([0-9]+(ns|us|µs|ms|s|m|h))+$",
+          "description": "Max time to read the entire request (e.g. 30s)",
+          "examples": [
+            "30s",
+            "1m",
+            "500ms",
+            "2h30m"
+          ]
+        },
+        "write_timeout": {
+          "type": "string",
+          "pattern": "^([0-9]+(ns|us|µs|ms|s|m|h))+$",
+          "description": "Max time to write the response (e.g. 30s)",
+          "examples": [
+            "30s",
+            "1m",
+            "500ms",
+            "2h30m"
+          ]
+        },
+        "idle_timeout": {
+          "type": "string",
+          "pattern": "^([0-9]+(ns|us|µs|ms|s|m|h))+$",
+          "description": "Max time for idle keep-alive connections (e.g. 120s)",
+          "examples": [
+            "30s",
+            "1m",
+            "500ms",
+            "2h30m"
+          ]
+        },
+        "shutdown_timeout": {
+          "type": "string",
+          "pattern": "^([0-9]+(ns|us|µs|ms|s|m|h))+$",
+          "description": "Graceful shutdown timeout (e.g. 15s)",
+          "examples": [
+            "30s",
+            "1m",
+            "500ms",
+            "2h30m"
+          ]
+        },
+        "trusted_proxies": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array",
+          "description": "CIDR ranges or IPs of trusted reverse proxies"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object"
+    },
+    "TransformConfig": {
+      "properties": {
+        "request": {
+          "$ref": "#/$defs/DirectionTransform",
+          "description": "Request transformations"
+        },
+        "response": {
+          "$ref": "#/$defs/DirectionTransform",
+          "description": "Response transformations"
+        },
+        "max_body_size": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Maximum body size in bytes for transformation"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object"
+    },
+    "UpstreamConfig": {
+      "properties": {
+        "url": {
+          "type": "string"
+        },
+        "path_rewrite": {
+          "type": "string"
+        },
+        "timeout": {
+          "type": "string",
+          "pattern": "^([0-9]+(ns|us|µs|ms|s|m|h))+$",
+          "examples": [
+            "30s",
+            "1m",
+            "500ms",
+            "2h30m"
+          ]
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "url"
+      ]
+    }
+  },
+  "properties": {
+    "server": {
+      "$ref": "#/$defs/ServerConfig",
+      "description": "HTTP server settings"
+    },
+    "logging": {
+      "$ref": "#/$defs/LoggingConfig",
+      "description": "Logging configuration"
+    },
+    "cors": {
+      "$ref": "#/$defs/CORSConfig",
+      "description": "Global CORS settings"
+    },
+    "rate_limit": {
+      "$ref": "#/$defs/RateLimitGlobalConfig",
+      "description": "Global rate limiting settings"
+    },
+    "auth_providers": {
+      "additionalProperties": {
+        "$ref": "#/$defs/AuthProvider"
+      },
+      "type": "object",
+      "description": "Named authentication providers"
+    },
+    "routes": {
+      "items": {
+        "$ref": "#/$defs/RouteConfig"
+      },
+      "type": "array",
+      "description": "Route definitions"
+    }
+  },
+  "additionalProperties": false,
+  "type": "object",
+  "required": [
+    "routes"
+  ]
+}

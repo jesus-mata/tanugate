@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"runtime"
 	"sync/atomic"
 	"syscall"
 
@@ -31,6 +32,49 @@ import (
 type handlerRef struct{ h http.Handler }
 
 func main() {
+	if len(os.Args) > 1 {
+		switch os.Args[1] {
+		case "validate":
+			runValidate()
+			return
+		case "schema":
+			runSchema()
+			return
+		}
+	}
+	runServe()
+}
+
+// runValidate loads and validates the configuration file, printing "OK" on
+// success or the error on failure.
+func runValidate() {
+	fs := flag.NewFlagSet("validate", flag.ExitOnError)
+	configPath := fs.String("config", "config/gateway.yaml", "path to configuration file")
+	_ = fs.Parse(os.Args[2:])
+
+	_, err := config.LoadConfig(*configPath)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
+	fmt.Println("OK: configuration is valid")
+}
+
+// runSchema generates the JSON Schema for the gateway configuration and writes
+// it to stdout.
+func runSchema() {
+	data, err := config.GenerateSchemaJSON()
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
+	fmt.Println(string(data))
+}
+
+// runServe starts the API gateway server. This is the default command when no
+// subcommand is specified, preserving backward compatibility with existing
+// invocations like `gateway -config path`.
+func runServe() {
 	configPath := flag.String("config", "config/gateway.yaml", "path to configuration file")
 	flag.Parse()
 
@@ -39,6 +83,9 @@ func main() {
 		slog.Error("failed to load configuration", "error", err)
 		os.Exit(1)
 	}
+
+	var cfgPtr atomic.Pointer[config.GatewayConfig]
+	cfgPtr.Store(cfg)
 
 	logLevel := parseLogLevel(cfg.Logging.Level)
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{
@@ -109,7 +156,7 @@ func main() {
 	current.Store(&handlerRef{h: handler})
 
 	mux := http.NewServeMux()
-	mux.HandleFunc("GET /health", observability.HealthHandler(cfg, healthChecker))
+	mux.HandleFunc("GET /health", observability.HealthHandler(&cfgPtr, healthChecker))
 	mux.Handle("GET /metrics", promhttp.HandlerFor(registry, promhttp.HandlerOpts{}))
 	mux.Handle("/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		current.Load().h.ServeHTTP(w, r)
@@ -126,26 +173,34 @@ func main() {
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM, syscall.SIGHUP)
 
+	srvErrCh := make(chan error, 1)
 	go func() {
 		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			slog.Error("server failed", "error", err)
-			os.Exit(1)
+			srvErrCh <- err
 		}
 	}()
 
+	var srvErr error
 loop:
-	for sig := range sigCh {
-		switch sig {
-		case syscall.SIGHUP:
-			handleReload(*configPath, cfg, &current, limiter, authenticators, metrics, trustedProxies, logger)
-		default:
+	for {
+		select {
+		case sig := <-sigCh:
+			switch sig {
+			case syscall.SIGHUP:
+				handleReload(*configPath, &cfgPtr, &current, limiter, authenticators, metrics, trustedProxies, logger)
+			default:
+				break loop
+			}
+		case err := <-srvErrCh:
+			slog.Error("server failed", "error", err)
+			srvErr = err
 			break loop
 		}
 	}
 
 	slog.Info("Shutting down server...")
 
-	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), cfg.Server.ShutdownTimeout)
+	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), cfgPtr.Load().Server.ShutdownTimeout)
 	defer shutdownCancel()
 	cancel() // Stop background goroutines (memory limiter cleanup).
 
@@ -170,11 +225,18 @@ loop:
 	}
 
 	slog.Info("Server stopped")
+
+	if srvErr != nil {
+		os.Exit(1)
+	}
 }
 
 // buildHandler creates the full handler pipeline from the given configuration
 // and shared resources. It returns an error if handler construction fails
 // (e.g., from invalid regex patterns).
+//
+// SYNC: keep in sync with buildTestHandler in internal/integration_test.go
+// Known test differences: no Logging middleware, nil trustedProxies, no-op retry sleep.
 func buildHandler(
 	cfg *config.GatewayConfig,
 	limiter ratelimit.Limiter,
@@ -185,7 +247,9 @@ func buildHandler(
 ) (h http.Handler, err error) {
 	defer func() {
 		if r := recover(); r != nil {
-			err = fmt.Errorf("panic building handler: %v", r)
+			buf := make([]byte, 4096)
+			n := runtime.Stack(buf, false)
+			err = fmt.Errorf("panic building handler: %v\n\n%s", r, buf[:n])
 		}
 	}()
 
@@ -244,7 +308,7 @@ func buildHandler(
 // handler continues serving and an error is logged.
 func handleReload(
 	configPath string,
-	currentCfg *config.GatewayConfig,
+	cfgPtr *atomic.Pointer[config.GatewayConfig],
 	current *atomic.Pointer[handlerRef],
 	limiter ratelimit.Limiter,
 	authenticators map[string]auth.Authenticator,
@@ -254,6 +318,8 @@ func handleReload(
 ) {
 	slog.Info("Received SIGHUP, reloading configuration...", "path", configPath)
 
+	oldCfg := cfgPtr.Load()
+
 	newCfg, err := config.LoadConfig(configPath)
 	if err != nil {
 		slog.Error("config reload failed: invalid configuration, keeping current config", "error", err)
@@ -261,7 +327,7 @@ func handleReload(
 	}
 
 	// Warn about non-reloadable changes.
-	for _, w := range config.NonReloadableChanges(currentCfg, newCfg) {
+	for _, w := range config.NonReloadableChanges(oldCfg, newCfg) {
 		slog.Warn("non-reloadable change detected (ignored)", "detail", w)
 	}
 
@@ -271,20 +337,18 @@ func handleReload(
 		return
 	}
 
+	// Log what changed (computed before stores so diff uses consistent snapshots).
+	changes := config.DiffSummary(oldCfg, newCfg)
+
+	// Store config first, then handler, so health checks never see stale config.
+	cfgPtr.Store(newCfg)
 	current.Store(&handlerRef{h: newHandler})
 
-	// Log what changed.
-	changes := config.DiffSummary(currentCfg, newCfg)
 	if len(changes) == 0 {
 		slog.Info("Configuration reloaded (no reloadable changes detected)")
 	} else {
 		slog.Info("Configuration reloaded successfully", "changes", changes)
 	}
-
-	// Update the current config reference for future reloads.
-	// Copy the reloadable fields into the current config.
-	currentCfg.Routes = newCfg.Routes
-	currentCfg.CORS = newCfg.CORS
 }
 
 func parseLogLevel(level string) slog.Level {

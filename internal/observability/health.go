@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
+	"sync/atomic"
 	"time"
 
 	"github.com/jesus-mata/tanugate/internal/config"
@@ -22,10 +23,12 @@ type HealthResponse struct {
 }
 
 // HealthHandler returns an http.HandlerFunc that reports gateway liveness.
-// If the config uses a Redis rate-limit backend, the checker is exercised
-// to determine if the gateway is degraded.
-func HealthHandler(cfg *config.GatewayConfig, checker HealthChecker) http.HandlerFunc {
+// The config is atomically loaded on each request so that hot-reloads are
+// reflected without restarting. If the config uses a Redis rate-limit backend,
+// the checker is exercised to determine if the gateway is degraded.
+func HealthHandler(cfgPtr *atomic.Pointer[config.GatewayConfig], checker HealthChecker) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		cfg := cfgPtr.Load()
 		resp := HealthResponse{
 			Status:    "up",
 			Timestamp: time.Now().UTC().Format(time.RFC3339),
@@ -48,7 +51,11 @@ func HealthHandler(cfg *config.GatewayConfig, checker HealthChecker) http.Handle
 		}
 
 		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusOK)
+		statusCode := http.StatusOK
+		if resp.Status == "degraded" {
+			statusCode = http.StatusServiceUnavailable
+		}
+		w.WriteHeader(statusCode)
 		_ = json.NewEncoder(w).Encode(resp)
 	}
 }

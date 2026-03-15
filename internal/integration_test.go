@@ -8,6 +8,8 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -328,9 +330,11 @@ func newTestGateway(t *testing.T) *testGateway {
 	gwConfig := &config.GatewayConfig{
 		RateLimit: config.RateLimitGlobalConfig{Backend: "memory"},
 	}
+	var cfgPtr atomic.Pointer[config.GatewayConfig]
+	cfgPtr.Store(gwConfig)
 
 	mux := http.NewServeMux()
-	mux.HandleFunc("GET /health", observability.HealthHandler(gwConfig, nil))
+	mux.HandleFunc("GET /health", observability.HealthHandler(&cfgPtr, nil))
 	mux.Handle("GET /metrics", promhttp.HandlerFor(registry, promhttp.HandlerOpts{}))
 	mux.Handle("/", globalChain(r))
 
@@ -814,6 +818,9 @@ func TestIntegration_MethodFiltering(t *testing.T) {
 type handlerRef struct{ h http.Handler }
 
 // buildTestHandler builds a globalChain(router) handler from routes and shared resources.
+//
+// SYNC: keep in sync with buildHandler in cmd/gateway/main.go
+// Known test differences: no Logging middleware, nil trustedProxies, no-op retry sleep.
 func buildTestHandler(
 	t *testing.T,
 	routes []config.RouteConfig,
@@ -1167,5 +1174,114 @@ func TestIntegration_ConfigReload_ZeroRoutes(t *testing.T) {
 	rr = doRequest(mux, "GET", "/api/items", nil, "")
 	if rr.Code != http.StatusNotFound {
 		t.Fatalf("expected 404 after reload with zero routes, got %d", rr.Code)
+	}
+}
+
+func TestIntegration_ConfigReload_SchemaRejection(t *testing.T) {
+	validYAML := `
+routes:
+  - name: "test"
+    match:
+      path_regex: "^/test"
+    upstream:
+      url: "http://localhost:8080"
+`
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "gateway.yaml")
+	if err := os.WriteFile(cfgPath, []byte(validYAML), 0644); err != nil {
+		t.Fatalf("failed to write valid config: %v", err)
+	}
+
+	cfg, err := config.LoadConfig(cfgPath)
+	if err != nil {
+		t.Fatalf("LoadConfig should succeed for valid config: %v", err)
+	}
+	if len(cfg.Routes) != 1 || cfg.Routes[0].Name != "test" {
+		t.Fatalf("unexpected config: %+v", cfg)
+	}
+
+	invalidYAML := `
+routez:
+  - name: "test"
+    match:
+      path_regex: "^/test"
+    upstream:
+      url: "http://localhost:8080"
+`
+	if err := os.WriteFile(cfgPath, []byte(invalidYAML), 0644); err != nil {
+		t.Fatalf("failed to write invalid config: %v", err)
+	}
+
+	_, err = config.LoadConfig(cfgPath)
+	if err == nil {
+		t.Fatal("expected LoadConfig to reject config with unknown field 'routez'")
+	}
+	if !strings.Contains(err.Error(), "additional properties") && !strings.Contains(err.Error(), "routez") {
+		t.Fatalf("expected error mentioning 'additional properties' or 'routez', got: %v", err)
+	}
+}
+
+func TestBuildTestHandler_MiddlewareOrderMatchesProduction(t *testing.T) {
+	// Documents known differences and fails if either chain changes.
+	//
+	// Production global chain:  Recovery, RequestID, Logging, Metrics, CORS
+	// Test global chain:        Recovery, RequestID, Metrics, CORS
+	//   (Logging intentionally omitted in tests)
+	//
+	// Per-route differences:
+	//   - trustedProxies: production passes parsed CIDRs; test passes nil
+	//   - retry: test passes retry.WithSleep(func(time.Duration) {})
+
+	mainSrc, err := os.ReadFile("../cmd/gateway/main.go")
+	if err != nil {
+		t.Fatalf("failed to read cmd/gateway/main.go: %v", err)
+	}
+	testSrc, err := os.ReadFile("integration_test.go")
+	if err != nil {
+		t.Fatalf("failed to read integration_test.go: %v", err)
+	}
+
+	prodRequired := []string{
+		"middleware.Recovery()",
+		"middleware.RequestID()",
+		"middleware.Logging(",
+		"metrics.Middleware()",
+		"middleware.CORS(",
+	}
+	for _, mw := range prodRequired {
+		if !strings.Contains(string(mainSrc), mw) {
+			t.Errorf("production buildHandler missing expected middleware: %s", mw)
+		}
+	}
+
+	testRequired := []string{
+		"middleware.Recovery()",
+		"middleware.RequestID()",
+		"metrics.Middleware()",
+		"middleware.CORS(",
+	}
+	for _, mw := range testRequired {
+		if !strings.Contains(string(testSrc), mw) {
+			t.Errorf("test buildTestHandler missing expected middleware: %s", mw)
+		}
+	}
+
+	perRouteRequired := []string{
+		"circuitbreaker.New(",
+		"retry.Retry(",
+		"retry.WithCircuitBreaker(",
+		"transform.RequestTransform(",
+		"transform.ResponseTransform(",
+		"middleware.CORSOverride(",
+		"auth.Middleware(",
+		"ratelimit.RateLimit(",
+	}
+	for _, mw := range perRouteRequired {
+		if !strings.Contains(string(mainSrc), mw) {
+			t.Errorf("production buildHandler missing per-route middleware: %s", mw)
+		}
+		if !strings.Contains(string(testSrc), mw) {
+			t.Errorf("test buildTestHandler missing per-route middleware: %s", mw)
+		}
 	}
 }

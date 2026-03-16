@@ -32,7 +32,7 @@ Tanugate is an API gateway designed to sit between your clients and backend serv
 - **Regex-based path matching** with named capture groups (`(?P<name>...)`)
 - **Method filtering** per route (optional — all methods allowed if omitted)
 - **Path rewriting** with parameter substitution from captured groups
-- **First-match routing** — routes are evaluated in configuration order
+- **First-match routing** — routes are evaluated in configuration order; route names must be unique
 
 ```yaml
 routes:
@@ -121,7 +121,8 @@ Per-route rate limiting with two backends and per-route algorithm selection (Red
 
 Key extraction options:
 - `ip` (default) — client IP with trusted proxy support via `X-Forwarded-For`
-- `header:<name>` — extract key from a request header
+- `header:<name>` — extract key from a request header (falls back to IP if header is missing)
+- `claim:<name>` — extract key from a JWT claim (requires an auth middleware earlier in the chain; falls back to IP if claim is missing or `null`)
 
 Response headers on every request:
 

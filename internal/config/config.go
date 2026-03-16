@@ -336,6 +336,15 @@ func hasUnresolvedEnvVar(s string) bool {
 func (cfg *GatewayConfig) semanticErrors() []string {
 	var errs []string
 
+	// Duplicate route names cause silent handler overwrites in the pipeline builder.
+	routeNames := make(map[string]bool, len(cfg.Routes))
+	for _, route := range cfg.Routes {
+		if routeNames[route.Name] {
+			errs = append(errs, fmt.Sprintf("duplicate route name %q", route.Name))
+		}
+		routeNames[route.Name] = true
+	}
+
 	// Sensitive fields must not contain unresolved env var placeholders.
 	for name, ap := range cfg.AuthProviders {
 		if ap.JWT != nil && hasUnresolvedEnvVar(ap.JWT.Secret) {

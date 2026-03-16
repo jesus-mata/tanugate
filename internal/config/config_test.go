@@ -1753,6 +1753,29 @@ routes: []
 	}
 }
 
+func TestSemanticErrors_DuplicateRouteName(t *testing.T) {
+	cfgPath := writeConfig(t, `
+routes:
+  - name: "api"
+    match:
+      path_regex: "/api/v1/.*"
+    upstream:
+      url: "http://backend1:8080"
+  - name: "api"
+    match:
+      path_regex: "/api/v2/.*"
+    upstream:
+      url: "http://backend2:8080"
+`)
+	_, err := LoadConfig(cfgPath)
+	if err == nil {
+		t.Fatal("expected error for duplicate route name")
+	}
+	if !strings.Contains(err.Error(), `duplicate route name "api"`) {
+		t.Errorf("unexpected error: %v", err)
+	}
+}
+
 func TestSemanticErrors_UnresolvedEnvVar_RedisPassword(t *testing.T) {
 	cfgPath := writeConfig(t, `
 rate_limit:

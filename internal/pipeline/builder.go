@@ -90,8 +90,9 @@ func BuildHandler(
 			}
 		}
 
-		// Apply transforms: request transform wrapping response transform wrapping handler.
-		for _, t := range transforms {
+		// Apply transforms in reverse so config order = execution order (first listed = outermost).
+		for j := len(transforms) - 1; j >= 0; j-- {
+			t := transforms[j]
 			tCfg, ok := t.Config.(*config.TransformConfig)
 			if !ok {
 				return nil, cleanup, fmt.Errorf("route %q: transform middleware %q: expected *config.TransformConfig, got %T", route.Name, t.Name, t.Config)

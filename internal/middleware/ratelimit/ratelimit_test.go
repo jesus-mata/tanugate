@@ -559,6 +559,20 @@ func TestExtractKey_Claim_ComplexValue(t *testing.T) {
 	}
 }
 
+func TestExtractKey_Claim_NilValue(t *testing.T) {
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.RemoteAddr = "1.2.3.4:1234"
+	ctx := auth.WithAuthResult(req.Context(), &auth.AuthResult{
+		Claims: map[string]any{"tenant_id": nil},
+	})
+	req = req.WithContext(ctx)
+
+	key := extractKey(req, "claim:tenant_id", nil)
+	if key != "1.2.3.4" {
+		t.Fatalf("expected IP fallback 1.2.3.4 for nil claim, got %s", key)
+	}
+}
+
 func TestExtractKey_Header_LongValue(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
 	req.RemoteAddr = "1.2.3.4:1234"

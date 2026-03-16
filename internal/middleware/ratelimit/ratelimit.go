@@ -152,8 +152,8 @@ func extractKey(r *http.Request, keySource string, trustedProxies []*net.IPNet) 
 			return extractIP(r, trustedProxies)
 		}
 		val, ok := ar.Claims[claimName]
-		if !ok {
-			slog.Warn("rate limit claim key not found, falling back to IP", "claim", claimName)
+		if !ok || val == nil {
+			slog.Warn("rate limit claim key not found or nil, falling back to IP", "claim", claimName)
 			return extractIP(r, trustedProxies)
 		}
 		var s string

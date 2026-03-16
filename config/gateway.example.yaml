@@ -169,6 +169,8 @@ middleware_definitions:
       requests: 100                   # Max requests per window
       window: 60s                     # Window duration
       key_source: "ip"                # Key extraction: "ip" | "header:<name>" | "claim:<name>"
+                                        # claim: requires auth middleware before rate_limit in the chain.
+                                        # If the claim is missing or null, falls back to IP silently.
       algorithm: "sliding_window"     # "sliding_window" (default) | "leaky_bucket" (Redis only)
 
   # --- Stricter rate limiter for order endpoints ---
@@ -256,7 +258,8 @@ middlewares:
 # =============================================================================
 # Routes
 # =============================================================================
-# Evaluated in order. First match wins.
+# Evaluated in order. First match wins. Route names MUST be unique — duplicate
+# names are rejected at config validation time.
 #
 # Each route can have:
 #   - middlewares:      Ordered list of middleware refs (run after globals)
@@ -267,6 +270,7 @@ middlewares:
 # Middleware execution order per route:
 #   1. Effective global middlewares (globals minus skip_middlewares)
 #   2. Route middlewares (in the order listed)
+#   Transforms are applied innermost (closest to the proxy), also in config order.
 #
 # Within each middleware ref, you can override config fields. The override is
 # a shallow merge — only the fields you specify are replaced.

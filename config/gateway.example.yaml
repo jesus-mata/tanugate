@@ -3,11 +3,13 @@
 # =============================================================================
 # Every field is documented. Copy this file to gateway.yaml and customize.
 # Environment variables are substituted using ${VAR_NAME} syntax on raw YAML
-# text before parsing.
+# text before parsing. If a ${VAR_NAME} is not set in the environment, the
+# placeholder is left as-is (not replaced with an empty string). This allows
+# transform dynamic variables like ${timestamp_unix} to pass through safely.
 #
 # IMPORTANT: path_rewrite uses {name} (single braces, no $) to reference named
 # capture groups from path_regex. Do NOT use ${name} there — the config loader
-# would treat it as an environment variable and replace it with an empty string.
+# would treat it as an environment variable reference.
 
 # -----------------------------------------------------------------------------
 # Server
@@ -19,6 +21,7 @@ server:
   write_timeout: 30s            # Max time to write response
   idle_timeout: 120s            # Max time to keep idle keep-alive connections open
   shutdown_timeout: 15s         # Grace period for in-flight requests on SIGINT/SIGTERM
+  max_header_bytes: 1048576     # 1 MB (default); set lower for stricter header size limits
   trusted_proxies:              # CIDRs whose X-Forwarded-For is trusted for IP extraction
     - "10.0.0.0/8"
     - "172.16.0.0/12"
@@ -31,39 +34,15 @@ logging:
   level: "info"                 # debug | info | warn | error
 
 # -----------------------------------------------------------------------------
-# CORS (Global)
-# Applies to all routes unless overridden per-route.
-# Preflight (OPTIONS + Origin + Access-Control-Request-Method) handled here.
-# -----------------------------------------------------------------------------
-cors:
-  allowed_origins:              # Origins allowed; ["*"] for any
-    - "https://example.com"
-    - "https://app.example.com"
-  allowed_methods:              # HTTP methods allowed in CORS requests
-    - "GET"
-    - "POST"
-    - "PUT"
-    - "DELETE"
-    - "PATCH"
-    - "OPTIONS"
-  allowed_headers:              # Request headers the client may send
-    - "Authorization"
-    - "Content-Type"
-    - "X-API-Key"
-    - "X-Request-ID"
-  exposed_headers:              # Response headers the browser may read
-    - "X-Request-ID"
-    - "X-RateLimit-Remaining"
-    - "X-RateLimit-Reset"
-  allow_credentials: true       # Whether to send Access-Control-Allow-Credentials
-  max_age: 3600                 # Preflight cache duration in seconds
-
-# -----------------------------------------------------------------------------
-# Rate Limiting
-# Backend: "memory" (token bucket, single-node) or "redis" (sliding window or leaky bucket, multi-node)
+# Rate Limiting (Infrastructure)
+# Backend: "memory" (token bucket, single-node) or "redis" (sliding window or
+# leaky bucket, multi-node).
 # Memory pros: zero deps, fast. Cons: not shared across instances.
-# Redis pros: shared state, algorithm choice. Cons: network hop, Redis dependency.
-# Per-route algorithm (Redis only): "sliding_window" (default) | "leaky_bucket"
+# Redis pros: shared state, algorithm choice. Cons: network hop, Redis dep.
+# Per-middleware algorithm (Redis only): "sliding_window" | "leaky_bucket"
+#
+# NOTE: This section configures the backend infrastructure only. Actual rate
+# limit rules (requests, window, key_source) are defined in middleware_definitions.
 # -----------------------------------------------------------------------------
 rate_limit:
   backend: "memory"             # "memory" | "redis"
@@ -82,7 +61,7 @@ rate_limit:
 
 # -----------------------------------------------------------------------------
 # Auth Providers
-# Each provider is referenced by name in route.auth.providers.
+# Each provider is referenced by name in auth middleware definitions.
 # Supported types: jwt, apikey, oidc
 # -----------------------------------------------------------------------------
 auth_providers:
@@ -106,9 +85,11 @@ auth_providers:
   # --- API Key ---
   apikey_svc1:
     type: "apikey"
-    apikey:
-      key: "${API_KEY_SVC1}"          # The expected API key value
+    api_key:
       header: "X-API-Key"            # Header to read the key from (default: X-API-Key)
+      keys:
+        - key: "${API_KEY_SVC1}"      # The expected API key value
+          name: "svc1"                # Human-readable name for logging
 
   # --- OIDC ---
   # oidc_provider:
@@ -127,54 +108,99 @@ auth_providers:
   #     # client_id: "gateway"
   #     # client_secret: "${OIDC_CLIENT_SECRET}"
 
-# -----------------------------------------------------------------------------
-# Routes
-# Evaluated in order. First match wins.
-# Each route can configure: auth, rate limit, retry, circuit breaker,
-# request/response transforms, and CORS override.
-# -----------------------------------------------------------------------------
-routes:
-  # --- Public route (no auth, no rate limit) ---
-  - name: "public-api"
-    match:
-      path_regex: "^/public(?P<path>/.*)?$"
-      methods: ["GET"]
-    upstream:
-      url: "http://public-service:3000"
-      path_rewrite: "/api{path}"         # {path} refers to the named capture group, NOT an env var
-      timeout: 10s
+# =============================================================================
+# Middleware Definitions
+# =============================================================================
+# Named, reusable middleware configurations. Each definition has a type and
+# type-specific config. These are referenced by name in the global `middlewares`
+# list and in per-route `middlewares` lists.
+#
+# Supported types: cors, rate_limit, auth, transform
+# =============================================================================
+middleware_definitions:
+  # --- Global CORS (applied to all routes via the global middlewares list) ---
+  # Handles both preflight OPTIONS requests and regular cross-origin headers.
+  # To override CORS for a specific route, define a separate cors middleware
+  # and use skip_middlewares to exclude global-cors from that route.
+  global-cors:
+    type: cors
+    config:
+      allowed_origins:
+        - "https://example.com"
+        - "https://app.example.com"
+      allowed_methods:
+        - "GET"
+        - "POST"
+        - "PUT"
+        - "DELETE"
+        - "PATCH"
+        - "OPTIONS"
+      allowed_headers:
+        - "Authorization"
+        - "Content-Type"
+        - "X-API-Key"
+        - "X-Request-ID"
+      exposed_headers:
+        - "X-Request-ID"
+        - "X-RateLimit-Remaining"
+        - "X-RateLimit-Reset"
+      allow_credentials: true
+      max_age: 3600
 
-  # --- JWT-protected with rate limit + retry + circuit breaker + transforms ---
-  - name: "user-service"
-    match:
-      path_regex: "^/api/users(?P<path>/.*)?$"
-      methods: ["GET", "POST", "PUT", "DELETE"]
-    upstream:
-      url: "http://user-service:3001"
-      path_rewrite: "/internal/users{path}"
-      timeout: 30s
-    auth:
-      providers:              # Tried in order; first success wins
+  # --- Per-route CORS override for specific routes ---
+  # When used on a route (with skip_middlewares: [global-cors]), this replaces
+  # the global CORS settings for that route.
+  # CORS middleware MUST be first in the resolved chain (global + route).
+  cors-widgets:
+    type: cors
+    config:
+      allowed_origins:
+        - "https://widgets.example.com"
+      allowed_methods: ["GET", "POST"]
+      allowed_headers: ["Authorization", "Content-Type"]
+      allow_credentials: true
+      max_age: 600
+
+  # --- Global rate limiter (applied to all routes via middlewares list) ---
+  # Rate limit by client IP: 100 requests per 60-second window.
+  global-rate-limit:
+    type: rate_limit
+    config:
+      requests: 100                   # Max requests per window
+      window: 60s                     # Window duration
+      key_source: "ip"                # Key extraction: "ip" | "header:<name>" | "claim:<name>"
+                                        # claim: requires auth middleware before rate_limit in the chain.
+                                        # If the claim is missing or null, falls back to IP silently.
+      algorithm: "sliding_window"     # "sliding_window" (default) | "leaky_bucket" (Redis only)
+
+  # --- Stricter rate limiter for order endpoints ---
+  order-rate-limit:
+    type: rate_limit
+    config:
+      requests: 50
+      window: 60s
+      key_source: "header:X-API-Key"
+      algorithm: "leaky_bucket"       # Smooth constant-rate draining (Redis only)
+
+  # --- JWT authentication ---
+  jwt-auth:
+    type: auth
+    config:
+      providers:                      # Tried in order; first success wins
         - "jwt_default"
-    rate_limit:
-      requests: 100               # Max requests per window
-      window: 60s                  # Window duration
-      key_func: "claim:sub"       # Key extraction: "ip" | "header:<name>" | "claim:<name>"
-      algorithm: "sliding_window" # "sliding_window" (default) | "leaky_bucket" (Redis only)
-    retry:
-      max_attempts: 3             # Total attempts (1 = no retry)
-      initial_delay: 100ms        # Delay before first retry
-      multiplier: 2.0             # Exponential backoff multiplier
-      retryable_status_codes:     # Status codes that trigger a retry
-        - 502
-        - 503
-        - 504
-    circuit_breaker:
-      failure_threshold: 5        # Consecutive failures to open circuit
-      success_threshold: 3        # Consecutive successes in half-open to close
-      timeout: 30s                # Time in open state before half-open
-    transform:
-      max_body_size: 1048576      # Max body size for transforms (bytes, default 1MB)
+
+  # --- API-key authentication ---
+  apikey-auth:
+    type: auth
+    config:
+      providers:
+        - "apikey_svc1"
+
+  # --- Request/response transforms for user-service ---
+  user-transform:
+    type: transform
+    config:
+      max_body_size: 1048576          # Max body size for transforms (bytes, default 1MB)
       request:
         headers:
           add:
@@ -183,7 +209,7 @@ routes:
           remove:
             - "X-Internal-Debug"
         body:
-          inject:
+          inject_fields:
             _gateway_timestamp: "${timestamp_iso}"
       response:
         headers:
@@ -193,7 +219,106 @@ routes:
           remove:
             - "X-Powered-By"
 
-  # --- API-key-protected with body transforms ---
+  # --- Transforms for order-service ---
+  order-transform:
+    type: transform
+    config:
+      request:
+        body:
+          inject_fields:
+            _source: "api-gateway"
+          strip_fields:
+            - "internal_field"
+      response:
+        body:
+          strip_fields:
+            - "internal_id"
+          rename_keys:
+            db_id: "id"
+
+# =============================================================================
+# Global Middlewares
+# =============================================================================
+# Middleware applied to ALL routes, in the order listed here. These run before
+# any per-route middlewares. Use `skip_middlewares` on a route to exclude
+# specific global middlewares.
+#
+# Each entry references a middleware definition by name using `ref:`.
+# Order matters — middlewares execute in the order listed (first = outermost).
+#
+# MIGRATION NOTE: CORS was previously a hardcoded top-level `cors:` config
+# field applied globally. It is now definition-based — define a CORS middleware
+# in middleware_definitions and reference it here. Routes without a CORS ref
+# in their effective chain receive no CORS headers.
+# =============================================================================
+middlewares:
+  - ref: global-cors
+  - ref: global-rate-limit
+
+# =============================================================================
+# Routes
+# =============================================================================
+# Evaluated in order. First match wins. Route names MUST be unique — duplicate
+# names are rejected at config validation time.
+#
+# Each route can have:
+#   - middlewares:      Ordered list of middleware refs (run after globals)
+#   - skip_middlewares: Names of global middlewares to exclude for this route
+#   - retry:           Retry settings (direct field — proxy behavior, not middleware)
+#   - circuit_breaker: Circuit breaker settings (direct field — proxy behavior)
+#
+# Middleware execution order per route:
+#   1. Effective global middlewares (globals minus skip_middlewares)
+#   2. Route middlewares (in the order listed)
+#   Transforms are applied innermost (closest to the proxy), also in config order.
+#
+# Within each middleware ref, you can override config fields. The override is
+# a shallow merge — only the fields you specify are replaced.
+# =============================================================================
+routes:
+  # --- Public route (no auth, skips global rate limit) ---
+  - name: "public-api"
+    match:
+      path_regex: "^/public(?P<path>/.*)?$"
+      methods: ["GET"]
+    upstream:
+      url: "http://public-service:3000"
+      path_rewrite: "/api{path}"      # {path} refers to the named capture group, NOT an env var
+      timeout: 10s
+    skip_middlewares:                   # Exclude these global middlewares for this route
+      - "global-rate-limit"
+
+  # --- JWT-protected with rate limit + retry + circuit breaker + transforms ---
+  # Demonstrates: middleware refs, config override, retry, circuit_breaker
+  - name: "user-service"
+    match:
+      path_regex: "^/api/users(?P<path>/.*)?$"
+      methods: ["GET", "POST", "PUT", "DELETE"]
+    upstream:
+      url: "http://user-service:3001"
+      path_rewrite: "/internal/users{path}"
+      timeout: 30s
+    middlewares:                        # Route-specific middlewares (run after globals)
+      - ref: jwt-auth                  # Auth runs first (after global CORS + rate limit)
+      - ref: global-rate-limit         # Re-use the global definition with an override
+        config:
+          requests: 200                # Override: allow 200 req/window for authenticated users
+          key_source: "claim:sub"      # Override: rate limit by JWT subject claim
+      - ref: user-transform            # Transform runs last in the chain
+    retry:                             # Retry stays as a direct route field (proxy behavior)
+      max_retries: 3                   # Total retry attempts (1 = no retry)
+      initial_delay: 100ms             # Delay before first retry
+      multiplier: 2.0                  # Exponential backoff multiplier
+      retryable_status_codes:          # Status codes that trigger a retry
+        - 502
+        - 503
+        - 504
+    circuit_breaker:                   # Circuit breaker stays as a direct route field
+      failure_threshold: 5             # Consecutive failures to open circuit
+      success_threshold: 3             # Consecutive successes in half-open to close
+      timeout: 30s                     # Time in open state before half-open
+
+  # --- API-key-protected with body transforms + leaky bucket ---
   - name: "order-service"
     match:
       path_regex: "^/api/orders(?P<path>/.*)?$"
@@ -202,29 +327,14 @@ routes:
       url: "http://order-service:3002"
       path_rewrite: "/internal/orders{path}"
       timeout: 30s
-    auth:
-      providers:
-        - "apikey_svc1"
-    rate_limit:
-      requests: 50
-      window: 60s
-      key_func: "header:X-API-Key"
-      algorithm: "leaky_bucket"   # Smooth constant-rate draining
-    transform:
-      request:
-        body:
-          inject:
-            _source: "api-gateway"
-          strip:
-            - "internal_field"
-      response:
-        body:
-          strip:
-            - "internal_id"
-          rename:
-            db_id: "id"
+    middlewares:
+      - ref: apikey-auth
+      - ref: order-rate-limit
+      - ref: order-transform
 
   # --- Per-route CORS override ---
+  # Demonstrates: CORS middleware override (must be first in chain).
+  # Skip the global CORS and use a route-specific one instead.
   - name: "widget-service"
     match:
       path_regex: "^/api/widgets(?P<path>/.*)?$"
@@ -232,13 +342,10 @@ routes:
       url: "http://widget-service:3003"
       path_rewrite: "/widgets{path}"
       timeout: 15s
-    cors:                          # Overrides global CORS for this route
-      allowed_origins:
-        - "https://widgets.example.com"
-      allowed_methods: ["GET", "POST"]
-      allowed_headers: ["Authorization", "Content-Type"]
-      allow_credentials: true
-      max_age: 600
+    skip_middlewares:
+      - "global-cors"                  # Remove global CORS for this route
+    middlewares:
+      - ref: cors-widgets              # Use route-specific CORS (must be first)
 
 # =============================================================================
 # Dynamic Variables (usable in transform headers/body values)

@@ -1,6 +1,7 @@
 package config
 
 import (
+	"bytes"
 	"fmt"
 	"log/slog"
 	"os"
@@ -11,14 +12,48 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
+// MiddlewareDefinition describes a reusable middleware configuration.
+type MiddlewareDefinition struct {
+	Type   string    `yaml:"type" jsonschema:"required,enum=cors,enum=rate_limit,enum=auth,enum=transform"`
+	Config yaml.Node `yaml:"config"`
+}
+
+// MiddlewareRef references a middleware definition, with optional config overrides.
+type MiddlewareRef struct {
+	Ref    string    `yaml:"ref" jsonschema:"required"`
+	Config yaml.Node `yaml:"config,omitempty"`
+}
+
+// RateLimitConfig holds per-middleware rate-limiting settings.
+// Replaces RouteLimitConfig with renamed fields.
+type RateLimitConfig struct {
+	Requests  int           `yaml:"requests" jsonschema:"minimum=1,description=Max requests allowed per window"`
+	Window    time.Duration `yaml:"window" jsonschema:"description=Rate limit window duration"`
+	KeySource string        `yaml:"key_source" jsonschema:"description=Key source: ip or header:<name>"`
+	Algorithm string        `yaml:"algorithm" jsonschema:"default=sliding_window,enum=sliding_window,enum=leaky_bucket"`
+}
+
+// AuthMiddlewareConfig selects authentication providers for a middleware.
+type AuthMiddlewareConfig struct {
+	Providers []string `yaml:"providers"`
+}
+
+// ResolvedMiddleware is the result of resolving a MiddlewareRef against definitions.
+type ResolvedMiddleware struct {
+	Name   string // definition name
+	Type   string // middleware type
+	Config any    // typed config
+}
+
 // GatewayConfig is the top-level configuration for the API gateway.
 type GatewayConfig struct {
-	Server        ServerConfig            `yaml:"server" jsonschema:"description=HTTP server settings"`
-	Logging       LoggingConfig           `yaml:"logging" jsonschema:"description=Logging configuration"`
-	CORS          CORSConfig              `yaml:"cors" jsonschema:"description=Global CORS settings"`
-	RateLimit     RateLimitGlobalConfig   `yaml:"rate_limit" jsonschema:"description=Global rate limiting settings"`
-	AuthProviders map[string]AuthProvider `yaml:"auth_providers" jsonschema:"description=Named authentication providers"`
-	Routes        []RouteConfig           `yaml:"routes" jsonschema:"required,description=Route definitions"`
+	Server                ServerConfig                       `yaml:"server" jsonschema:"description=HTTP server settings"`
+	Logging               LoggingConfig                      `yaml:"logging" jsonschema:"description=Logging configuration"`
+	RateLimit             RateLimitGlobalConfig              `yaml:"rate_limit" jsonschema:"description=Global rate limiting settings"`
+	AuthProviders         map[string]AuthProvider            `yaml:"auth_providers" jsonschema:"description=Named authentication providers"`
+	MiddlewareDefinitions map[string]MiddlewareDefinition    `yaml:"middleware_definitions" jsonschema:"description=Reusable middleware definitions"`
+	Middlewares           []MiddlewareRef                    `yaml:"middlewares" jsonschema:"description=Global middleware chain applied to all routes"`
+	Routes                []RouteConfig                      `yaml:"routes" jsonschema:"required,description=Route definitions"`
 }
 
 // ServerConfig holds HTTP server settings.
@@ -30,6 +65,7 @@ type ServerConfig struct {
 	IdleTimeout     time.Duration `yaml:"idle_timeout" jsonschema:"description=Max time for idle keep-alive connections (e.g. 120s)"`
 	ShutdownTimeout time.Duration `yaml:"shutdown_timeout" jsonschema:"description=Graceful shutdown timeout (e.g. 15s)"`
 	TrustedProxies  []string      `yaml:"trusted_proxies" jsonschema:"description=CIDR ranges or IPs of trusted reverse proxies"`
+	MaxHeaderBytes  int           `yaml:"max_header_bytes" jsonschema:"default=1048576,minimum=4096,description=Maximum size of request headers in bytes"`
 }
 
 // LoggingConfig holds logging settings.
@@ -111,15 +147,13 @@ type OIDCConfig struct {
 
 // RouteConfig describes a single route handled by the gateway.
 type RouteConfig struct {
-	Name           string                `yaml:"name" jsonschema:"required"`
-	Match          MatchConfig           `yaml:"match" jsonschema:"required"`
-	Upstream       UpstreamConfig        `yaml:"upstream" jsonschema:"required"`
-	CORS           *CORSConfig           `yaml:"cors"`
-	Auth           *RouteAuthConfig      `yaml:"auth"`
-	RateLimit      *RouteLimitConfig     `yaml:"rate_limit"`
-	Retry          *RetryConfig          `yaml:"retry"`
-	CircuitBreaker *CircuitBreakerConfig `yaml:"circuit_breaker"`
-	Transform      *TransformConfig      `yaml:"transform"`
+	Name            string                `yaml:"name" jsonschema:"required"`
+	Match           MatchConfig           `yaml:"match" jsonschema:"required"`
+	Upstream        UpstreamConfig        `yaml:"upstream" jsonschema:"required"`
+	Retry           *RetryConfig          `yaml:"retry"`
+	CircuitBreaker  *CircuitBreakerConfig `yaml:"circuit_breaker"`
+	SkipMiddlewares []string              `yaml:"skip_middlewares" jsonschema:"description=Names of global middlewares to skip for this route"`
+	Middlewares     []MiddlewareRef       `yaml:"middlewares" jsonschema:"description=Ordered middleware refs for this route"`
 }
 
 // MatchConfig holds request-matching criteria for a route.
@@ -133,20 +167,6 @@ type UpstreamConfig struct {
 	URL         string        `yaml:"url" jsonschema:"required"`
 	PathRewrite string        `yaml:"path_rewrite"`
 	Timeout     time.Duration `yaml:"timeout"`
-}
-
-// RouteAuthConfig selects the authentication providers for a route.
-// Providers are tried in order; the first to succeed authenticates the request.
-type RouteAuthConfig struct {
-	Providers []string `yaml:"providers"`
-}
-
-// RouteLimitConfig holds per-route rate-limiting settings.
-type RouteLimitConfig struct {
-	RequestsPerWindow int           `yaml:"requests_per_window" jsonschema:"minimum=1,description=Max requests allowed per window"`
-	Window            time.Duration `yaml:"window" jsonschema:"description=Rate limit window duration (e.g. 1m)"`
-	KeySource         string        `yaml:"key_source" jsonschema:"description=Key source for rate limiting: ip or header:<name>"`
-	Algorithm         string        `yaml:"algorithm" jsonschema:"default=sliding_window,enum=sliding_window,enum=leaky_bucket,description=Rate limiting algorithm"`
 }
 
 // RetryConfig holds retry behaviour settings for a route.
@@ -209,8 +229,8 @@ func LoadConfig(path string) (*GatewayConfig, error) {
 		varName := envVarPattern.FindStringSubmatch(match)[1]
 		value, ok := os.LookupEnv(varName)
 		if !ok {
-			slog.Warn("environment variable not set, using empty string", "var", varName)
-			return ""
+			slog.Warn("environment variable not set, leaving placeholder", "var", varName)
+			return match
 		}
 		return value
 	})
@@ -256,6 +276,9 @@ func applyDefaults(cfg *GatewayConfig) {
 	if cfg.Server.ShutdownTimeout == 0 {
 		cfg.Server.ShutdownTimeout = 15 * time.Second
 	}
+	if cfg.Server.MaxHeaderBytes == 0 {
+		cfg.Server.MaxHeaderBytes = 1 << 20 // 1 MB
+	}
 	if cfg.Logging.Level == "" {
 		cfg.Logging.Level = "info"
 	}
@@ -286,9 +309,6 @@ func applyDefaults(cfg *GatewayConfig) {
 		if cfg.Routes[i].Upstream.Timeout == 0 {
 			cfg.Routes[i].Upstream.Timeout = 30 * time.Second
 		}
-		if cfg.Routes[i].RateLimit != nil && cfg.Routes[i].RateLimit.Algorithm == "" {
-			cfg.Routes[i].RateLimit.Algorithm = "sliding_window"
-		}
 	}
 }
 
@@ -305,12 +325,67 @@ func (cfg *GatewayConfig) Validate() error {
 	return nil
 }
 
+// hasUnresolvedEnvVar reports whether s still contains a ${VAR} placeholder.
+func hasUnresolvedEnvVar(s string) bool {
+	return envVarPattern.MatchString(s)
+}
+
 // semanticErrors returns human-readable error strings for logic errors
-// that the JSON Schema cannot express (regex compilation, auth provider
-// references, etc.). It also provides route-name-aware messages for
-// constraints that the schema checks structurally.
+// that the JSON Schema cannot express (regex compilation, middleware
+// resolution, auth provider references, etc.).
 func (cfg *GatewayConfig) semanticErrors() []string {
 	var errs []string
+
+	// Duplicate route names cause silent handler overwrites in the pipeline builder.
+	routeNames := make(map[string]bool, len(cfg.Routes))
+	for _, route := range cfg.Routes {
+		if routeNames[route.Name] {
+			errs = append(errs, fmt.Sprintf("duplicate route name %q", route.Name))
+		}
+		routeNames[route.Name] = true
+	}
+
+	// Sensitive fields must not contain unresolved env var placeholders.
+	for name, ap := range cfg.AuthProviders {
+		if ap.JWT != nil && hasUnresolvedEnvVar(ap.JWT.Secret) {
+			errs = append(errs, fmt.Sprintf("auth_providers.%s.jwt.secret contains unresolved env var placeholder %q — set the variable or use a literal value", name, ap.JWT.Secret))
+		}
+		if ap.APIKey != nil {
+			for i, k := range ap.APIKey.Keys {
+				if hasUnresolvedEnvVar(k.Key) {
+					errs = append(errs, fmt.Sprintf("auth_providers.%s.api_key.keys[%d].key contains unresolved env var placeholder %q — set the variable or use a literal value", name, i, k.Key))
+				}
+			}
+		}
+		if ap.OIDC != nil && hasUnresolvedEnvVar(ap.OIDC.ClientSecret) {
+			errs = append(errs, fmt.Sprintf("auth_providers.%s.oidc.client_secret contains unresolved env var placeholder %q — set the variable or use a literal value", name, ap.OIDC.ClientSecret))
+		}
+	}
+	if cfg.RateLimit.Redis != nil {
+		if hasUnresolvedEnvVar(cfg.RateLimit.Redis.Addr) {
+			errs = append(errs, fmt.Sprintf("rate_limit.redis.addr contains unresolved env var placeholder %q — set the variable or use a literal value", cfg.RateLimit.Redis.Addr))
+		}
+		if hasUnresolvedEnvVar(cfg.RateLimit.Redis.Password) {
+			errs = append(errs, fmt.Sprintf("rate_limit.redis.password contains unresolved env var placeholder %q — set the variable or use a literal value", cfg.RateLimit.Redis.Password))
+		}
+	}
+
+	// Validate global middleware refs resolve.
+	globalResolved, globalErr := ResolveMiddlewares(cfg.Middlewares, cfg.MiddlewareDefinitions)
+	if globalErr != nil {
+		errs = append(errs, fmt.Sprintf("global middlewares: %v", globalErr))
+	}
+
+	// Per-type validation for global resolved middlewares.
+	if globalErr == nil {
+		errs = append(errs, validateResolvedMiddlewares("global", globalResolved, cfg)...)
+	}
+
+	// Build a set of global middleware ref names for skip_middlewares validation.
+	globalRefNames := make(map[string]bool, len(cfg.Middlewares))
+	for _, ref := range cfg.Middlewares {
+		globalRefNames[ref.Ref] = true
+	}
 
 	for _, route := range cfg.Routes {
 		if route.Match.PathRegex != "" {
@@ -319,59 +394,152 @@ func (cfg *GatewayConfig) semanticErrors() []string {
 			}
 		}
 
-		if rl := route.RateLimit; rl != nil {
-			if rl.RequestsPerWindow <= 0 {
-				errs = append(errs, fmt.Sprintf("route %q: requests_per_window must be > 0, got %d", route.Name, rl.RequestsPerWindow))
+		// Validate skip_middlewares entries reference global middleware names.
+		for _, name := range route.SkipMiddlewares {
+			if !globalRefNames[name] {
+				errs = append(errs, fmt.Sprintf("route %q: skip_middlewares entry %q does not match any global middleware ref", route.Name, name))
 			}
-			if rl.Window <= 0 {
-				errs = append(errs, fmt.Sprintf("route %q: window must be > 0, got %v", route.Name, rl.Window))
-			}
-			switch rl.Algorithm {
-			case "sliding_window", "leaky_bucket":
-				// valid
-			default:
-				errs = append(errs, fmt.Sprintf("route %q: unsupported algorithm %q, must be sliding_window or leaky_bucket", route.Name, rl.Algorithm))
-			}
-			if rl.KeySource != "" && rl.KeySource != "ip" {
-				if !strings.HasPrefix(rl.KeySource, "header:") || strings.TrimPrefix(rl.KeySource, "header:") == "" {
-					errs = append(errs, fmt.Sprintf("route %q: invalid key_source %q (must be \"ip\", \"header:<name>\", or empty)", route.Name, rl.KeySource))
+		}
+
+		// Resolve route-level middleware refs.
+		routeResolved, routeErr := ResolveMiddlewares(route.Middlewares, cfg.MiddlewareDefinitions)
+		if routeErr != nil {
+			errs = append(errs, fmt.Sprintf("route %q: %v", route.Name, routeErr))
+			continue
+		}
+
+		// Per-type validation for route-level resolved middlewares.
+		errs = append(errs, validateResolvedMiddlewares(fmt.Sprintf("route %q", route.Name), routeResolved, cfg)...)
+
+		// Build the effective chain: filtered globals + route middlewares.
+		skipSet := make(map[string]bool, len(route.SkipMiddlewares))
+		for _, name := range route.SkipMiddlewares {
+			skipSet[name] = true
+		}
+		var effectiveChain []ResolvedMiddleware
+		if globalErr == nil {
+			for _, gm := range globalResolved {
+				if !skipSet[gm.Name] {
+					effectiveChain = append(effectiveChain, gm)
 				}
 			}
 		}
+		effectiveChain = append(effectiveChain, routeResolved...)
 
-		if route.Auth == nil {
-			continue
-		}
-		providers := route.Auth.Providers
-		if len(providers) == 0 {
-			errs = append(errs, fmt.Sprintf("route %q: auth is set but no providers are configured", route.Name))
-			continue
-		}
-		seen := make(map[string]bool, len(providers))
-
-		for _, p := range providers {
-			if p == "" {
-				errs = append(errs, fmt.Sprintf("route %q: provider name is empty", route.Name))
-				continue
-			}
-			if seen[p] {
-				errs = append(errs, fmt.Sprintf("route %q: duplicate provider %q", route.Name, p))
-				continue
-			}
-			seen[p] = true
-
-			if p != "none" {
-				if _, ok := cfg.AuthProviders[p]; !ok {
-					errs = append(errs, fmt.Sprintf("route %q: provider %q not defined in auth_providers", route.Name, p))
+		// Validate CORS: at most one, must be first.
+		corsCount := 0
+		for i, mw := range effectiveChain {
+			if mw.Type == "cors" {
+				corsCount++
+				if i != 0 && corsCount == 1 {
+					errs = append(errs, fmt.Sprintf("route %q: CORS middleware %q must be first in the middleware chain, but is at position %d", route.Name, mw.Name, i))
 				}
 			}
 		}
+		if corsCount > 1 {
+			errs = append(errs, fmt.Sprintf("route %q: %d CORS middlewares in effective chain; use skip_middlewares to remove the global one before adding a route-level override", route.Name, corsCount))
+		}
 
-		if seen["none"] && len(providers) > 1 {
-			errs = append(errs, fmt.Sprintf("route %q: \"none\" cannot be combined with other providers", route.Name))
+		// Validate rate_limit with claim: key_source has preceding auth.
+		authSeen := false
+		for _, mw := range effectiveChain {
+			if mw.Type == "auth" {
+				authSeen = true
+			}
+			if mw.Type == "rate_limit" {
+				if rlCfg, ok := mw.Config.(*RateLimitConfig); ok {
+					if strings.HasPrefix(rlCfg.KeySource, "claim:") && !authSeen {
+						errs = append(errs, fmt.Sprintf("route %q: rate_limit middleware %q uses key_source %q but no auth middleware precedes it", route.Name, mw.Name, rlCfg.KeySource))
+					}
+				}
+			}
 		}
 	}
 
+	return errs
+}
+
+// validateResolvedMiddlewares performs per-type validation on a set of resolved
+// middlewares and returns error strings prefixed with context (e.g. "global" or
+// "route \"name\"").
+func validateResolvedMiddlewares(context string, resolved []ResolvedMiddleware, cfg *GatewayConfig) []string {
+	var errs []string
+	for _, mw := range resolved {
+		switch mw.Type {
+		case "rate_limit":
+			rlCfg, ok := mw.Config.(*RateLimitConfig)
+			if !ok {
+				errs = append(errs, fmt.Sprintf("%s: middleware %q: internal error: expected *RateLimitConfig, got %T", context, mw.Name, mw.Config))
+				continue
+			}
+			if rlCfg.Requests <= 0 {
+				errs = append(errs, fmt.Sprintf("%s: middleware %q: requests must be > 0, got %d", context, mw.Name, rlCfg.Requests))
+			}
+			if rlCfg.Window <= 0 {
+				errs = append(errs, fmt.Sprintf("%s: middleware %q: window must be > 0, got %v", context, mw.Name, rlCfg.Window))
+			}
+			switch rlCfg.Algorithm {
+			case "sliding_window", "leaky_bucket":
+				// valid
+			default:
+				errs = append(errs, fmt.Sprintf("%s: middleware %q: unsupported algorithm %q, must be sliding_window or leaky_bucket", context, mw.Name, rlCfg.Algorithm))
+			}
+			if rlCfg.Algorithm == "leaky_bucket" && cfg.RateLimit.Backend != "redis" {
+				errs = append(errs, fmt.Sprintf("%s: middleware %q: algorithm %q requires rate_limit.backend \"redis\", got %q",
+					context, mw.Name, rlCfg.Algorithm, cfg.RateLimit.Backend))
+			}
+			if rlCfg.KeySource != "" && rlCfg.KeySource != "ip" {
+				if !strings.HasPrefix(rlCfg.KeySource, "header:") && !strings.HasPrefix(rlCfg.KeySource, "claim:") {
+					errs = append(errs, fmt.Sprintf("%s: middleware %q: invalid key_source %q (must be \"ip\", \"header:<name>\", \"claim:<name>\", or empty)", context, mw.Name, rlCfg.KeySource))
+				} else if strings.HasPrefix(rlCfg.KeySource, "header:") && strings.TrimPrefix(rlCfg.KeySource, "header:") == "" {
+					errs = append(errs, fmt.Sprintf("%s: middleware %q: invalid key_source %q (header name is empty)", context, mw.Name, rlCfg.KeySource))
+				} else if strings.HasPrefix(rlCfg.KeySource, "claim:") && strings.TrimPrefix(rlCfg.KeySource, "claim:") == "" {
+					errs = append(errs, fmt.Sprintf("%s: middleware %q: invalid key_source %q (claim name is empty)", context, mw.Name, rlCfg.KeySource))
+				}
+			}
+
+		case "auth":
+			authCfg, ok := mw.Config.(*AuthMiddlewareConfig)
+			if !ok {
+				errs = append(errs, fmt.Sprintf("%s: middleware %q: internal error: expected *AuthMiddlewareConfig, got %T", context, mw.Name, mw.Config))
+				continue
+			}
+			if len(authCfg.Providers) == 0 {
+				errs = append(errs, fmt.Sprintf("%s: middleware %q: auth has no providers configured", context, mw.Name))
+				continue
+			}
+			seen := make(map[string]bool, len(authCfg.Providers))
+			for _, p := range authCfg.Providers {
+				if p == "" {
+					errs = append(errs, fmt.Sprintf("%s: middleware %q: provider name is empty", context, mw.Name))
+					continue
+				}
+				if seen[p] {
+					errs = append(errs, fmt.Sprintf("%s: middleware %q: duplicate provider %q", context, mw.Name, p))
+					continue
+				}
+				seen[p] = true
+				if p != "none" {
+					if _, ok := cfg.AuthProviders[p]; !ok {
+						errs = append(errs, fmt.Sprintf("%s: middleware %q: provider %q not defined in auth_providers", context, mw.Name, p))
+					}
+				}
+			}
+			if seen["none"] && len(authCfg.Providers) > 1 {
+				errs = append(errs, fmt.Sprintf("%s: middleware %q: \"none\" cannot be combined with other providers", context, mw.Name))
+			}
+
+		case "cors":
+			corsCfg, ok := mw.Config.(*CORSConfig)
+			if !ok {
+				errs = append(errs, fmt.Sprintf("%s: middleware %q: internal error: expected *CORSConfig, got %T", context, mw.Name, mw.Config))
+				continue
+			}
+			if len(corsCfg.AllowedOrigins) == 0 {
+				errs = append(errs, fmt.Sprintf("%s: middleware %q: cors has no allowed_origins configured — all cross-origin requests will be rejected", context, mw.Name))
+			}
+		}
+	}
 	return errs
 }
 
@@ -401,6 +569,9 @@ func NonReloadableChanges(old, new *GatewayConfig) []string {
 	}
 	if !stringSliceEqual(old.Server.TrustedProxies, new.Server.TrustedProxies) {
 		warnings = append(warnings, "server.trusted_proxies changed — requires restart")
+	}
+	if old.Server.MaxHeaderBytes != new.Server.MaxHeaderBytes {
+		warnings = append(warnings, fmt.Sprintf("server.max_header_bytes changed (%d -> %d) — requires restart", old.Server.MaxHeaderBytes, new.Server.MaxHeaderBytes))
 	}
 
 	if old.RateLimit.Backend != new.RateLimit.Backend {
@@ -561,9 +732,12 @@ func DiffSummary(old, new *GatewayConfig) []string {
 		}
 	}
 
-	// CORS changes.
-	if corsChanged(&old.CORS, &new.CORS) {
-		changes = append(changes, "global CORS configuration changed")
+	// Middleware definitions changes.
+	changes = append(changes, diffMiddlewareDefinitions(old.MiddlewareDefinitions, new.MiddlewareDefinitions)...)
+
+	// Global middlewares list changes.
+	if !middlewareRefsEqual(old.Middlewares, new.Middlewares) {
+		changes = append(changes, "global middlewares list changed")
 	}
 
 	return changes
@@ -579,12 +753,6 @@ func routeChanged(a, b *RouteConfig) bool {
 	if a.Upstream.URL != b.Upstream.URL || a.Upstream.PathRewrite != b.Upstream.PathRewrite || a.Upstream.Timeout != b.Upstream.Timeout {
 		return true
 	}
-	if !routeAuthEqual(a.Auth, b.Auth) {
-		return true
-	}
-	if !routeLimitEqual(a.RateLimit, b.RateLimit) {
-		return true
-	}
 	// Consider any change in optional config blocks as a modification.
 	if !retryEqual(a.Retry, b.Retry) {
 		return true
@@ -592,13 +760,28 @@ func routeChanged(a, b *RouteConfig) bool {
 	if !cbEqual(a.CircuitBreaker, b.CircuitBreaker) {
 		return true
 	}
-	if corsChanged(a.CORS, b.CORS) {
+	if !stringSliceEqual(a.SkipMiddlewares, b.SkipMiddlewares) {
 		return true
 	}
-	if transformChanged(a.Transform, b.Transform) {
+	if !middlewareRefsEqual(a.Middlewares, b.Middlewares) {
 		return true
 	}
 	return false
+}
+
+func middlewareRefsEqual(a, b []MiddlewareRef) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i].Ref != b[i].Ref {
+			return false
+		}
+		if !yamlNodeEqual(a[i].Config, b[i].Config) {
+			return false
+		}
+	}
+	return true
 }
 
 func stringSliceEqual(a, b []string) bool {
@@ -611,26 +794,6 @@ func stringSliceEqual(a, b []string) bool {
 		}
 	}
 	return true
-}
-
-func routeAuthEqual(a, b *RouteAuthConfig) bool {
-	if a == nil && b == nil {
-		return true
-	}
-	if a == nil || b == nil {
-		return false
-	}
-	return stringSliceEqual(a.Providers, b.Providers)
-}
-
-func routeLimitEqual(a, b *RouteLimitConfig) bool {
-	if a == nil && b == nil {
-		return true
-	}
-	if a == nil || b == nil {
-		return false
-	}
-	return a.RequestsPerWindow == b.RequestsPerWindow && a.Window == b.Window && a.KeySource == b.KeySource && a.Algorithm == b.Algorithm
 }
 
 func retryEqual(a, b *RetryConfig) bool {
@@ -664,121 +827,51 @@ func cbEqual(a, b *CircuitBreakerConfig) bool {
 	return a.FailureThreshold == b.FailureThreshold && a.SuccessThreshold == b.SuccessThreshold && a.Timeout == b.Timeout
 }
 
-func transformChanged(a, b *TransformConfig) bool {
-	if a == nil && b == nil {
-		return false
-	}
-	if a == nil || b == nil {
-		return true
-	}
-	if a.MaxBodySize != b.MaxBodySize {
-		return true
-	}
-	if directionTransformChanged(a.Request, b.Request) {
-		return true
-	}
-	if directionTransformChanged(a.Response, b.Response) {
-		return true
-	}
-	return false
-}
+// diffMiddlewareDefinitions returns human-readable change descriptions for
+// added, removed, and modified middleware definitions.
+func diffMiddlewareDefinitions(old, new map[string]MiddlewareDefinition) []string {
+	var changes []string
 
-func directionTransformChanged(a, b *DirectionTransform) bool {
-	if a == nil && b == nil {
-		return false
-	}
-	if a == nil || b == nil {
-		return true
-	}
-	if headerTransformChanged(a.Headers, b.Headers) {
-		return true
-	}
-	if bodyTransformChanged(a.Body, b.Body) {
-		return true
-	}
-	return false
-}
-
-func headerTransformChanged(a, b *HeaderTransform) bool {
-	if a == nil && b == nil {
-		return false
-	}
-	if a == nil || b == nil {
-		return true
-	}
-	if len(a.Add) != len(b.Add) {
-		return true
-	}
-	for k, v := range a.Add {
-		if b.Add[k] != v {
-			return true
+	// Detect added and modified definitions.
+	for name, nd := range new {
+		od, existed := old[name]
+		if !existed {
+			changes = append(changes, fmt.Sprintf("middleware_definitions: %q added", name))
+			continue
+		}
+		if !middlewareDefinitionEqual(od, nd) {
+			changes = append(changes, fmt.Sprintf("middleware_definitions: %q modified", name))
 		}
 	}
-	if !stringSliceEqual(a.Remove, b.Remove) {
-		return true
-	}
-	if len(a.Rename) != len(b.Rename) {
-		return true
-	}
-	for k, v := range a.Rename {
-		if b.Rename[k] != v {
-			return true
+
+	// Detect removed definitions.
+	for name := range old {
+		if _, exists := new[name]; !exists {
+			changes = append(changes, fmt.Sprintf("middleware_definitions: %q removed", name))
 		}
 	}
-	return false
+
+	return changes
 }
 
-func bodyTransformChanged(a, b *BodyTransform) bool {
-	if a == nil && b == nil {
+// middlewareDefinitionEqual compares two MiddlewareDefinition values by type
+// and YAML node content using deep comparison via marshal-and-compare.
+func middlewareDefinitionEqual(a, b MiddlewareDefinition) bool {
+	if a.Type != b.Type {
 		return false
 	}
-	if a == nil || b == nil {
-		return true
-	}
-	if len(a.InjectFields) != len(b.InjectFields) {
-		return true
-	}
-	for k, v := range a.InjectFields {
-		bv, ok := b.InjectFields[k]
-		if !ok || fmt.Sprintf("%v", v) != fmt.Sprintf("%v", bv) {
-			return true
-		}
-	}
-	if !stringSliceEqual(a.StripFields, b.StripFields) {
-		return true
-	}
-	if len(a.RenameKeys) != len(b.RenameKeys) {
-		return true
-	}
-	for k, v := range a.RenameKeys {
-		if b.RenameKeys[k] != v {
-			return true
-		}
-	}
-	return false
+	return yamlNodeEqual(a.Config, b.Config)
 }
 
-func corsChanged(a, b *CORSConfig) bool {
-	if a == nil && b == nil {
-		return false
+// yamlNodeEqual compares two yaml.Node values by marshaling them to YAML bytes
+// and comparing the results. This handles arbitrarily nested structures
+// correctly, unlike shallow .Value comparison which misses nested mappings.
+func yamlNodeEqual(a, b yaml.Node) bool {
+	aBytes, err1 := yaml.Marshal(&a)
+	bBytes, err2 := yaml.Marshal(&b)
+	if err1 != nil || err2 != nil {
+		return false // marshal failure → assume different (safe default)
 	}
-	if a == nil || b == nil {
-		return true
-	}
-	if !stringSliceEqual(a.AllowedOrigins, b.AllowedOrigins) {
-		return true
-	}
-	if !stringSliceEqual(a.AllowedMethods, b.AllowedMethods) {
-		return true
-	}
-	if !stringSliceEqual(a.AllowedHeaders, b.AllowedHeaders) {
-		return true
-	}
-	if !stringSliceEqual(a.ExposedHeaders, b.ExposedHeaders) {
-		return true
-	}
-	if a.AllowCredentials != b.AllowCredentials || a.MaxAge != b.MaxAge {
-		return true
-	}
-	return false
+	return bytes.Equal(aBytes, bBytes)
 }
+

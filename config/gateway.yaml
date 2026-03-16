@@ -9,16 +9,6 @@ server:
 logging:
   level: "info"
 
-cors:
-  allowed_origins: ["${CORS_ALLOWED_ORIGIN}"]
-  allowed_methods: ["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"]
-  allowed_headers:
-    ["Authorization", "Content-Type", "X-API-Key", "X-Request-ID"]
-  exposed_headers:
-    ["X-Request-ID", "X-RateLimit-Remaining", "X-RateLimit-Reset"]
-  allow_credentials: true
-  max_age: 3600
-
 rate_limit:
   backend: "${RATE_LIMIT_BACKEND}"
   redis:
@@ -42,27 +32,54 @@ auth_providers:
       allowed_algorithms: # Default: ["RS256"]
         - "EdDSA"
 
+# Middleware definitions — extracted from per-route auth configs
+middleware_definitions:
+  global-cors:
+    type: cors
+    config:
+      allowed_origins: ["${CORS_ALLOWED_ORIGIN}"]
+      allowed_methods: ["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"]
+      allowed_headers:
+        ["Authorization", "Content-Type", "X-API-Key", "X-Request-ID"]
+      exposed_headers:
+        ["X-Request-ID", "X-RateLimit-Remaining", "X-RateLimit-Reset"]
+      allow_credentials: true
+      max_age: 3600
+
+  better-auth-mw:
+    type: auth
+    config:
+      providers:
+        - "better-auth"
+
+  jwt-auth-mw:
+    type: auth
+    config:
+      providers:
+        - "jwt_default"
+
+middlewares:
+  - ref: global-cors
+
 routes:
   - name: "factura"
     match:
       path_regex: "^/factura(?P<path>/.*)?$"
       methods: ["GET", "POST", "PUT", "DELETE", "PATCH"]
-    auth:
-      providers:
-        - "better-auth"
     upstream:
       url: "http://localhost:5152"
       path_rewrite: "{path}"
       timeout: 10s
+    middlewares:
+      - ref: better-auth-mw
 
   - name: "public-api"
     match:
       path_regex: "^/public(?P<path>/.*)?$"
       methods: ["GET"]
-    auth:
-      providers:
-        - "jwt_default"
     upstream:
       url: "http://public-service:3000"
       path_rewrite: "/api{path}"
       timeout: 10s
+    middlewares:
+      - ref: jwt-auth-mw

@@ -19,16 +19,14 @@ import (
 	"github.com/jesus-mata/tanugate/internal/config"
 	"github.com/jesus-mata/tanugate/internal/middleware"
 	"github.com/jesus-mata/tanugate/internal/middleware/auth"
-	"github.com/jesus-mata/tanugate/internal/middleware/circuitbreaker"
 	"github.com/jesus-mata/tanugate/internal/middleware/ratelimit"
-	"github.com/jesus-mata/tanugate/internal/middleware/retry"
-	"github.com/jesus-mata/tanugate/internal/middleware/transform"
 	"github.com/jesus-mata/tanugate/internal/observability"
-	"github.com/jesus-mata/tanugate/internal/proxy"
+	"github.com/jesus-mata/tanugate/internal/pipeline"
 	"github.com/jesus-mata/tanugate/internal/router"
 	"github.com/golang-jwt/jwt/v5"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
+	"gopkg.in/yaml.v3"
 )
 
 const testJWTSecret = "integration-test-secret-key-1234"
@@ -120,6 +118,26 @@ func validJWT() string {
 	})
 }
 
+// mustYAMLNode converts a Go value into a yaml.Node suitable for use as
+// MiddlewareDefinition.Config or MiddlewareRef.Config. It panics on error
+// because test setup failures should be immediately visible.
+func mustYAMLNode(t *testing.T, v any) yaml.Node {
+	t.Helper()
+	data, err := yaml.Marshal(v)
+	if err != nil {
+		t.Fatalf("mustYAMLNode: marshal failed: %v", err)
+	}
+	var doc yaml.Node
+	if err := yaml.Unmarshal(data, &doc); err != nil {
+		t.Fatalf("mustYAMLNode: unmarshal failed: %v", err)
+	}
+	// yaml.Unmarshal produces a document node wrapping the actual content.
+	if doc.Kind == yaml.DocumentNode && len(doc.Content) > 0 {
+		return *doc.Content[0]
+	}
+	return doc
+}
+
 // testGateway holds all components for integration testing.
 type testGateway struct {
 	handler  http.Handler
@@ -136,120 +154,6 @@ func newTestGateway(t *testing.T) *testGateway {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
-
-	routes := []config.RouteConfig{
-		{
-			Name: "test-public",
-			Match: config.MatchConfig{
-				PathRegex: `^/public/(?P<rest>.*)$`,
-				Methods:   []string{"GET"},
-			},
-			Upstream: config.UpstreamConfig{
-				URL:         upstreamServer.URL,
-				PathRewrite: "/api/{rest}",
-				Timeout:     5 * time.Second,
-			},
-		},
-		{
-			Name: "test-jwt",
-			Match: config.MatchConfig{
-				PathRegex: `^/api/jwt/(?P<rest>.*)$`,
-				Methods:   []string{"GET", "POST", "PUT", "DELETE"},
-			},
-			Upstream: config.UpstreamConfig{
-				URL:         upstreamServer.URL,
-				PathRewrite: "/internal/jwt/{rest}",
-				Timeout:     5 * time.Second,
-			},
-			Auth: &config.RouteAuthConfig{Providers: []string{"jwt_default"}},
-			RateLimit: &config.RouteLimitConfig{
-				RequestsPerWindow: 5,
-				Window:            60 * time.Second,
-				KeySource:         "ip",
-			},
-			Transform: &config.TransformConfig{
-				Request: &config.DirectionTransform{
-					Headers: &config.HeaderTransform{
-						Add:    map[string]string{"X-Gateway-Route": "${route_name}"},
-						Remove: []string{"X-Internal-Debug"},
-					},
-				},
-				Response: &config.DirectionTransform{
-					Headers: &config.HeaderTransform{
-						Add:    map[string]string{"X-Served-By": "api-gateway"},
-						Remove: []string{"X-Powered-By"},
-					},
-				},
-			},
-		},
-		{
-			Name: "test-apikey",
-			Match: config.MatchConfig{
-				PathRegex: `^/api/key/(?P<rest>.*)$`,
-				Methods:   []string{"GET", "POST"},
-			},
-			Upstream: config.UpstreamConfig{
-				URL:         upstreamServer.URL,
-				PathRewrite: "/internal/key/{rest}",
-				Timeout:     5 * time.Second,
-			},
-			Auth: &config.RouteAuthConfig{Providers: []string{"apikey_svc1"}},
-			Transform: &config.TransformConfig{
-				Request: &config.DirectionTransform{
-					Body: &config.BodyTransform{
-						InjectFields: map[string]any{"_source": "api-gateway"},
-						StripFields:  []string{"secret_field"},
-					},
-				},
-				Response: &config.DirectionTransform{
-					Body: &config.BodyTransform{
-						StripFields: []string{"internal_id"},
-						RenameKeys:  map[string]string{"db_id": "id"},
-					},
-				},
-			},
-		},
-		{
-			Name: "test-resilience",
-			Match: config.MatchConfig{
-				PathRegex: `^/api/resilience/(?P<rest>.*)$`,
-			},
-			Upstream: config.UpstreamConfig{
-				URL:         upstreamServer.URL,
-				PathRewrite: "/internal/resilience/{rest}",
-				Timeout:     5 * time.Second,
-			},
-			Retry: &config.RetryConfig{
-				MaxRetries:           2,
-				InitialDelay:         1 * time.Millisecond,
-				Multiplier:           1.0,
-				RetryableStatusCodes: []int{503},
-			},
-			CircuitBreaker: &config.CircuitBreakerConfig{
-				FailureThreshold: 3,
-				SuccessThreshold: 1,
-				Timeout:          100 * time.Millisecond,
-			},
-		},
-		{
-			Name: "test-cors-override",
-			Match: config.MatchConfig{
-				PathRegex: `^/api/cors/(?P<rest>.*)$`,
-			},
-			Upstream: config.UpstreamConfig{
-				URL:         upstreamServer.URL,
-				PathRewrite: "/internal/cors/{rest}",
-				Timeout:     5 * time.Second,
-			},
-			CORS: &config.CORSConfig{
-				AllowedOrigins:   []string{"https://override.example.com"},
-				AllowedMethods:   []string{"GET"},
-				AllowedHeaders:   []string{"Authorization"},
-				AllowCredentials: true,
-				MaxAge:           600,
-			},
-		},
-	}
 
 	authenticators := map[string]auth.Authenticator{
 		"jwt_default": mustAuth(t, config.AuthProvider{
@@ -269,74 +173,218 @@ func newTestGateway(t *testing.T) *testGateway {
 		}),
 	}
 
-	registry := prometheus.NewRegistry()
-	metrics := observability.NewMetricsCollector(registry)
+	promRegistry := prometheus.NewRegistry()
+	metrics := observability.NewMetricsCollector(promRegistry)
 	limiter := ratelimit.NewMemoryLimiter(ctx)
 
-	handlers := make(map[string]http.Handler, len(routes))
-	for i := range routes {
-		h := proxy.NewProxyHandler(&routes[i])
-		route := &routes[i]
-
-		if route.CircuitBreaker != nil {
-			cb := circuitbreaker.New(route.CircuitBreaker, route.Name,
-				circuitbreaker.WithOnStateChange(func(routeName string, from, to circuitbreaker.State) {
-					metrics.CircuitBreakerState.WithLabelValues(routeName, to.String()).Set(1)
-					metrics.CircuitBreakerState.WithLabelValues(routeName, from.String()).Set(0)
-				}),
-			)
-			if route.Retry != nil {
-				h = retry.Retry(route.Retry, cb, h, retry.WithSleep(func(time.Duration) {}))
-			} else {
-				h = retry.WithCircuitBreaker(cb, h)
-			}
-		} else if route.Retry != nil {
-			h = retry.Retry(route.Retry, nil, h, retry.WithSleep(func(time.Duration) {}))
-		}
-
-		if route.Transform != nil {
-			h = transform.RequestTransform(route.Transform.Request, route.Transform.MaxBodySize)(
-				transform.ResponseTransform(route.Transform.Response, route.Transform.MaxBodySize)(h))
-		}
-
-		if route.CORS != nil {
-			h = middleware.CORSOverride(*route.CORS)(h)
-		}
-
-		// Auth and rate-limit are per-route (router sets context before dispatch).
-		h = auth.Middleware(slog.Default(), authenticators)(h)
-		h = ratelimit.RateLimit(limiter, metrics, nil)(h)
-
-		handlers[route.Name] = h
-	}
-
-	r := router.New(routes, handlers)
-
-	corsConfig := config.CORSConfig{
-		AllowedOrigins:   []string{"https://example.com"},
-		AllowedMethods:   []string{"GET", "POST", "PUT", "DELETE", "OPTIONS"},
-		AllowedHeaders:   []string{"Authorization", "Content-Type", "X-API-Key"},
-		AllowCredentials: true,
-		MaxAge:           3600,
-	}
-
-	globalChain := middleware.Chain(
-		middleware.Recovery(),
-		middleware.RequestID(),
-		metrics.Middleware(),
-		middleware.CORS(corsConfig),
-	)
-
+	// Build the GatewayConfig with middleware definitions and refs.
 	gwConfig := &config.GatewayConfig{
 		RateLimit: config.RateLimitGlobalConfig{Backend: "memory"},
+		AuthProviders: map[string]config.AuthProvider{
+			"jwt_default": {
+				Type: "jwt",
+				JWT: &config.JWTConfig{
+					Secret:    testJWTSecret,
+					Algorithm: "HS256",
+					Issuer:    "test-issuer",
+				},
+			},
+			"apikey_svc1": {
+				Type: "apikey",
+				APIKey: &config.APIKeyConfig{
+					Header: "X-API-Key",
+					Keys:   []config.APIKeyEntry{{Key: testAPIKey, Name: "test-client"}},
+				},
+			},
+		},
+		Middlewares: []config.MiddlewareRef{
+			{Ref: "global-cors"},
+		},
+		MiddlewareDefinitions: map[string]config.MiddlewareDefinition{
+			"global-cors": {
+				Type: "cors",
+				Config: mustYAMLNode(t, map[string]any{
+					"allowed_origins":    []string{"https://example.com"},
+					"allowed_methods":    []string{"GET", "POST", "PUT", "DELETE", "OPTIONS"},
+					"allowed_headers":    []string{"Authorization", "Content-Type", "X-API-Key"},
+					"allow_credentials":  true,
+					"max_age":            3600,
+				}),
+			},
+			"jwt-auth": {
+				Type: "auth",
+				Config: mustYAMLNode(t, map[string]any{
+					"providers": []string{"jwt_default"},
+				}),
+			},
+			"apikey-auth": {
+				Type: "auth",
+				Config: mustYAMLNode(t, map[string]any{
+					"providers": []string{"apikey_svc1"},
+				}),
+			},
+			"ip-limiter": {
+				Type: "rate_limit",
+				Config: mustYAMLNode(t, map[string]any{
+					"requests":   5,
+					"window":     "60s",
+					"key_source": "ip",
+				}),
+			},
+			"jwt-transform": {
+				Type: "transform",
+				Config: mustYAMLNode(t, map[string]any{
+					"request": map[string]any{
+						"headers": map[string]any{
+							"add":    map[string]string{"X-Gateway-Route": "${route_name}"},
+							"remove": []string{"X-Internal-Debug"},
+						},
+					},
+					"response": map[string]any{
+						"headers": map[string]any{
+							"add":    map[string]string{"X-Served-By": "api-gateway"},
+							"remove": []string{"X-Powered-By"},
+						},
+					},
+				}),
+			},
+			"apikey-transform": {
+				Type: "transform",
+				Config: mustYAMLNode(t, map[string]any{
+					"request": map[string]any{
+						"body": map[string]any{
+							"inject_fields": map[string]any{"_source": "api-gateway"},
+							"strip_fields":  []string{"secret_field"},
+						},
+					},
+					"response": map[string]any{
+						"body": map[string]any{
+							"strip_fields": []string{"internal_id"},
+							"rename_keys":  map[string]string{"db_id": "id"},
+						},
+					},
+				}),
+			},
+			"cors-override": {
+				Type: "cors",
+				Config: mustYAMLNode(t, map[string]any{
+					"allowed_origins":    []string{"https://override.example.com"},
+					"allowed_methods":    []string{"GET"},
+					"allowed_headers":    []string{"Authorization"},
+					"allow_credentials":  true,
+					"max_age":            600,
+				}),
+			},
+		},
+		Routes: []config.RouteConfig{
+			{
+				Name: "test-public",
+				Match: config.MatchConfig{
+					PathRegex: `^/public/(?P<rest>.*)$`,
+					Methods:   []string{"GET"},
+				},
+				Upstream: config.UpstreamConfig{
+					URL:         upstreamServer.URL,
+					PathRewrite: "/api/{rest}",
+					Timeout:     5 * time.Second,
+				},
+				// No middlewares — public route.
+			},
+			{
+				Name: "test-jwt",
+				Match: config.MatchConfig{
+					PathRegex: `^/api/jwt/(?P<rest>.*)$`,
+					Methods:   []string{"GET", "POST", "PUT", "DELETE"},
+				},
+				Upstream: config.UpstreamConfig{
+					URL:         upstreamServer.URL,
+					PathRewrite: "/internal/jwt/{rest}",
+					Timeout:     5 * time.Second,
+				},
+				Middlewares: []config.MiddlewareRef{
+					{Ref: "ip-limiter"},
+					{Ref: "jwt-auth"},
+					{Ref: "jwt-transform"},
+				},
+			},
+			{
+				Name: "test-apikey",
+				Match: config.MatchConfig{
+					PathRegex: `^/api/key/(?P<rest>.*)$`,
+					Methods:   []string{"GET", "POST"},
+				},
+				Upstream: config.UpstreamConfig{
+					URL:         upstreamServer.URL,
+					PathRewrite: "/internal/key/{rest}",
+					Timeout:     5 * time.Second,
+				},
+				Middlewares: []config.MiddlewareRef{
+					{Ref: "apikey-auth"},
+					{Ref: "apikey-transform"},
+				},
+			},
+			{
+				Name: "test-resilience",
+				Match: config.MatchConfig{
+					PathRegex: `^/api/resilience/(?P<rest>.*)$`,
+				},
+				Upstream: config.UpstreamConfig{
+					URL:         upstreamServer.URL,
+					PathRewrite: "/internal/resilience/{rest}",
+					Timeout:     5 * time.Second,
+				},
+				Retry: &config.RetryConfig{
+					MaxRetries:           2,
+					InitialDelay:         1 * time.Millisecond,
+					Multiplier:           1.0,
+					RetryableStatusCodes: []int{503},
+				},
+				CircuitBreaker: &config.CircuitBreakerConfig{
+					FailureThreshold: 3,
+					SuccessThreshold: 1,
+					Timeout:          100 * time.Millisecond,
+				},
+			},
+			{
+				Name: "test-cors-override",
+				Match: config.MatchConfig{
+					PathRegex: `^/api/cors/(?P<rest>.*)$`,
+				},
+				Upstream: config.UpstreamConfig{
+					URL:         upstreamServer.URL,
+					PathRewrite: "/internal/cors/{rest}",
+					Timeout:     5 * time.Second,
+				},
+				SkipMiddlewares: []string{"global-cors"},
+				Middlewares: []config.MiddlewareRef{
+					{Ref: "cors-override"},
+				},
+			},
+		},
 	}
+
+	deps := &pipeline.FactoryDeps{
+		Limiter:        limiter,
+		Authenticators: authenticators,
+		Metrics:        metrics,
+		TrustedProxies: nil,
+		Logger:         slog.Default(),
+	}
+	registry := pipeline.DefaultRegistry()
+
+	handler, cleanup, err := pipeline.BuildHandler(gwConfig, deps, registry)
+	if err != nil {
+		t.Fatalf("pipeline.BuildHandler failed: %v", err)
+	}
+	t.Cleanup(cleanup)
+
 	var cfgPtr atomic.Pointer[config.GatewayConfig]
 	cfgPtr.Store(gwConfig)
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /health", observability.HealthHandler(&cfgPtr, nil))
-	mux.Handle("GET /metrics", promhttp.HandlerFor(registry, promhttp.HandlerOpts{}))
-	mux.Handle("/", globalChain(r))
+	mux.Handle("GET /metrics", promhttp.HandlerFor(promRegistry, promhttp.HandlerOpts{}))
+	mux.Handle("/", handler)
 
 	return &testGateway{
 		handler:  mux,
@@ -700,6 +748,23 @@ func TestIntegration_CORSOverride(t *testing.T) {
 	if rr.Header().Get("Access-Control-Allow-Origin") != "https://override.example.com" {
 		t.Errorf("expected override origin, got %q", rr.Header().Get("Access-Control-Allow-Origin"))
 	}
+
+	// Preflight should also work with the per-route CORS override.
+	preReq := httptest.NewRequest("OPTIONS", "/api/cors/data", nil)
+	preReq.Header.Set("Origin", "https://override.example.com")
+	preReq.Header.Set("Access-Control-Request-Method", "GET")
+	preRR := httptest.NewRecorder()
+	gw.handler.ServeHTTP(preRR, preReq)
+
+	if preRR.Code != http.StatusNoContent {
+		t.Fatalf("preflight: expected 204, got %d", preRR.Code)
+	}
+	if preRR.Header().Get("Access-Control-Allow-Origin") != "https://override.example.com" {
+		t.Errorf("preflight: expected override origin, got %q", preRR.Header().Get("Access-Control-Allow-Origin"))
+	}
+	if preRR.Header().Get("Access-Control-Allow-Methods") == "" {
+		t.Error("preflight: missing Access-Control-Allow-Methods")
+	}
 }
 
 func TestIntegration_HealthEndpoint(t *testing.T) {
@@ -807,7 +872,7 @@ func TestIntegration_RequestIDPropagated(t *testing.T) {
 
 func TestIntegration_MethodFiltering(t *testing.T) {
 	gw := newTestGateway(t)
-	// test-public only allows GET; POST should not match any route → 404
+	// test-public only allows GET; POST should not match any route -> 404
 	rr := doRequest(gw.handler, "POST", "/public/data", nil, "")
 	if rr.Code != http.StatusNotFound {
 		t.Fatalf("expected 404 for wrong method, got %d", rr.Code)
@@ -817,66 +882,40 @@ func TestIntegration_MethodFiltering(t *testing.T) {
 // handlerRef wraps an http.Handler for use with atomic.Pointer (mirrors cmd/gateway).
 type handlerRef struct{ h http.Handler }
 
-// buildTestHandler builds a globalChain(router) handler from routes and shared resources.
-//
-// SYNC: keep in sync with buildHandler in cmd/gateway/main.go
-// Known test differences: no Logging middleware, nil trustedProxies, no-op retry sleep.
+// buildTestHandler builds a handler pipeline from a GatewayConfig using
+// pipeline.BuildHandler, mirroring production code exactly.
 func buildTestHandler(
 	t *testing.T,
-	routes []config.RouteConfig,
+	gwCfg *config.GatewayConfig,
 	authenticators map[string]auth.Authenticator,
 	limiter ratelimit.Limiter,
 	metrics *observability.MetricsCollector,
-	corsConfig config.CORSConfig,
 ) http.Handler {
 	t.Helper()
 
-	handlers := make(map[string]http.Handler, len(routes))
-	for i := range routes {
-		h := proxy.NewProxyHandler(&routes[i])
-		route := &routes[i]
-
-		if route.CircuitBreaker != nil {
-			cb := circuitbreaker.New(route.CircuitBreaker, route.Name,
-				circuitbreaker.WithOnStateChange(func(routeName string, from, to circuitbreaker.State) {
-					metrics.CircuitBreakerState.WithLabelValues(routeName, to.String()).Set(1)
-					metrics.CircuitBreakerState.WithLabelValues(routeName, from.String()).Set(0)
-				}),
-			)
-			if route.Retry != nil {
-				h = retry.Retry(route.Retry, cb, h, retry.WithSleep(func(time.Duration) {}))
-			} else {
-				h = retry.WithCircuitBreaker(cb, h)
-			}
-		} else if route.Retry != nil {
-			h = retry.Retry(route.Retry, nil, h, retry.WithSleep(func(time.Duration) {}))
-		}
-
-		if route.Transform != nil {
-			h = transform.RequestTransform(route.Transform.Request, route.Transform.MaxBodySize)(
-				transform.ResponseTransform(route.Transform.Response, route.Transform.MaxBodySize)(h))
-		}
-
-		if route.CORS != nil {
-			h = middleware.CORSOverride(*route.CORS)(h)
-		}
-
-		h = auth.Middleware(slog.Default(), authenticators)(h)
-		h = ratelimit.RateLimit(limiter, metrics, nil)(h)
-
-		handlers[route.Name] = h
+	deps := &pipeline.FactoryDeps{
+		Limiter:        limiter,
+		Authenticators: authenticators,
+		Metrics:        metrics,
+		TrustedProxies: nil,
+		Logger:         slog.Default(),
 	}
+	registry := pipeline.DefaultRegistry()
 
-	r := router.New(routes, handlers)
+	handler, cleanup, err := pipeline.BuildHandler(gwCfg, deps, registry)
+	if err != nil {
+		t.Fatalf("pipeline.BuildHandler failed: %v", err)
+	}
+	t.Cleanup(cleanup)
+	return handler
+}
 
-	globalChain := middleware.Chain(
-		middleware.Recovery(),
-		middleware.RequestID(),
-		metrics.Middleware(),
-		middleware.CORS(corsConfig),
-	)
-
-	return globalChain(r)
+// makeSimpleGatewayConfig creates a minimal GatewayConfig with the given routes.
+func makeSimpleGatewayConfig(routes []config.RouteConfig) *config.GatewayConfig {
+	return &config.GatewayConfig{
+		RateLimit: config.RateLimitGlobalConfig{Backend: "memory"},
+		Routes:    routes,
+	}
 }
 
 func TestIntegration_ConfigReload(t *testing.T) {
@@ -888,15 +927,9 @@ func TestIntegration_ConfigReload(t *testing.T) {
 	t.Cleanup(cancel)
 
 	authenticators := map[string]auth.Authenticator{}
-	registry := prometheus.NewRegistry()
-	metrics := observability.NewMetricsCollector(registry)
+	promRegistry := prometheus.NewRegistry()
+	metrics := observability.NewMetricsCollector(promRegistry)
 	limiter := ratelimit.NewMemoryLimiter(ctx)
-
-	corsConfig := config.CORSConfig{
-		AllowedOrigins:   []string{"*"},
-		AllowedMethods:   []string{"GET"},
-		AllowCredentials: false,
-	}
 
 	// Initial routes: only /v1/...
 	initialRoutes := []config.RouteConfig{
@@ -911,7 +944,8 @@ func TestIntegration_ConfigReload(t *testing.T) {
 		},
 	}
 
-	initialHandler := buildTestHandler(t, initialRoutes, authenticators, limiter, metrics, corsConfig)
+	initialCfg := makeSimpleGatewayConfig(initialRoutes)
+	initialHandler := buildTestHandler(t, initialCfg, authenticators, limiter, metrics)
 
 	// Set up atomic handler pointer.
 	var current atomic.Pointer[handlerRef]
@@ -947,7 +981,8 @@ func TestIntegration_ConfigReload(t *testing.T) {
 		},
 	}
 
-	newHandler := buildTestHandler(t, newRoutes, authenticators, limiter, metrics, corsConfig)
+	newCfg := makeSimpleGatewayConfig(newRoutes)
+	newHandler := buildTestHandler(t, newCfg, authenticators, limiter, metrics)
 
 	// Atomic swap.
 	current.Store(&handlerRef{h: newHandler})
@@ -978,15 +1013,9 @@ func TestIntegration_ConfigReload_InvalidConfigKeepsOldHandler(t *testing.T) {
 	t.Cleanup(cancel)
 
 	authenticators := map[string]auth.Authenticator{}
-	registry := prometheus.NewRegistry()
-	metrics := observability.NewMetricsCollector(registry)
+	promRegistry := prometheus.NewRegistry()
+	metrics := observability.NewMetricsCollector(promRegistry)
 	limiter := ratelimit.NewMemoryLimiter(ctx)
-
-	corsConfig := config.CORSConfig{
-		AllowedOrigins:   []string{"*"},
-		AllowedMethods:   []string{"GET"},
-		AllowCredentials: false,
-	}
 
 	routes := []config.RouteConfig{
 		{
@@ -1000,7 +1029,8 @@ func TestIntegration_ConfigReload_InvalidConfigKeepsOldHandler(t *testing.T) {
 		},
 	}
 
-	handler := buildTestHandler(t, routes, authenticators, limiter, metrics, corsConfig)
+	gwCfg := makeSimpleGatewayConfig(routes)
+	handler := buildTestHandler(t, gwCfg, authenticators, limiter, metrics)
 
 	var current atomic.Pointer[handlerRef]
 	current.Store(&handlerRef{h: handler})
@@ -1016,7 +1046,7 @@ func TestIntegration_ConfigReload_InvalidConfigKeepsOldHandler(t *testing.T) {
 		t.Fatalf("expected 200, got %d", rr.Code)
 	}
 
-	// Simulate failed reload: invalid config → do NOT swap.
+	// Simulate failed reload: invalid config -> do NOT swap.
 	// (In the real code, handleReload catches the LoadConfig error and skips the swap.)
 	// Here we simulate by validating a bad config and verifying we don't swap.
 	badCfg := &config.GatewayConfig{
@@ -1033,7 +1063,7 @@ func TestIntegration_ConfigReload_InvalidConfigKeepsOldHandler(t *testing.T) {
 	if err := badCfg.Validate(); err == nil {
 		t.Fatal("expected validation error for bad regex")
 	}
-	// Handler was NOT swapped — old route should still work.
+	// Handler was NOT swapped -- old route should still work.
 	rr = doRequest(mux, "GET", "/api/items", nil, "")
 	if rr.Code != http.StatusOK {
 		t.Fatalf("expected 200 after failed reload, got %d", rr.Code)
@@ -1049,14 +1079,9 @@ func TestIntegration_ConfigReload_ConcurrentRequests(t *testing.T) {
 	t.Cleanup(cancel)
 
 	authenticators := map[string]auth.Authenticator{}
-	registry := prometheus.NewRegistry()
-	metrics := observability.NewMetricsCollector(registry)
+	promRegistry := prometheus.NewRegistry()
+	metrics := observability.NewMetricsCollector(promRegistry)
 	limiter := ratelimit.NewMemoryLimiter(ctx)
-
-	corsConfig := config.CORSConfig{
-		AllowedOrigins: []string{"*"},
-		AllowedMethods: []string{"GET"},
-	}
 
 	makeRoutes := func(name, prefix string) []config.RouteConfig {
 		return []config.RouteConfig{{
@@ -1070,7 +1095,8 @@ func TestIntegration_ConfigReload_ConcurrentRequests(t *testing.T) {
 		}}
 	}
 
-	initialHandler := buildTestHandler(t, makeRoutes("v1", "v1"), authenticators, limiter, metrics, corsConfig)
+	initialCfg := makeSimpleGatewayConfig(makeRoutes("v1", "v1"))
+	initialHandler := buildTestHandler(t, initialCfg, authenticators, limiter, metrics)
 
 	var current atomic.Pointer[handlerRef]
 	current.Store(&handlerRef{h: initialHandler})
@@ -1083,6 +1109,7 @@ func TestIntegration_ConfigReload_ConcurrentRequests(t *testing.T) {
 	// Fire concurrent requests while swapping handlers.
 	var wg sync.WaitGroup
 	errors := make(chan error, 100)
+	var v1ok, v2ok atomic.Int32
 
 	// Readers hitting /v1/ and /v2/ concurrently.
 	for range 50 {
@@ -1091,14 +1118,17 @@ func TestIntegration_ConfigReload_ConcurrentRequests(t *testing.T) {
 			defer wg.Done()
 			rr := doRequest(mux, "GET", "/v1/data", nil, "")
 			// Before swap: 200; after swap: 404. Both are acceptable.
-			if rr.Code != http.StatusOK && rr.Code != http.StatusNotFound {
+			if rr.Code == http.StatusOK {
+				v1ok.Add(1)
+			} else if rr.Code != http.StatusNotFound {
 				errors <- fmt.Errorf("unexpected status %d for /v1/data", rr.Code)
 			}
 		}()
 	}
 
 	// Swap in the middle of concurrent requests.
-	newHandler := buildTestHandler(t, makeRoutes("v2", "v2"), authenticators, limiter, metrics, corsConfig)
+	newCfg := makeSimpleGatewayConfig(makeRoutes("v2", "v2"))
+	newHandler := buildTestHandler(t, newCfg, authenticators, limiter, metrics)
 	current.Store(&handlerRef{h: newHandler})
 
 	for range 50 {
@@ -1107,7 +1137,9 @@ func TestIntegration_ConfigReload_ConcurrentRequests(t *testing.T) {
 			defer wg.Done()
 			rr := doRequest(mux, "GET", "/v2/data", nil, "")
 			// After swap: should be 200. Before swap would be 404.
-			if rr.Code != http.StatusOK && rr.Code != http.StatusNotFound {
+			if rr.Code == http.StatusOK {
+				v2ok.Add(1)
+			} else if rr.Code != http.StatusNotFound {
 				errors <- fmt.Errorf("unexpected status %d for /v2/data", rr.Code)
 			}
 		}()
@@ -1118,6 +1150,13 @@ func TestIntegration_ConfigReload_ConcurrentRequests(t *testing.T) {
 
 	for err := range errors {
 		t.Error(err)
+	}
+
+	if v1ok.Load() == 0 {
+		t.Error("expected at least one /v1/data request to succeed with 200")
+	}
+	if v2ok.Load() == 0 {
+		t.Error("expected at least one /v2/data request to succeed with 200")
 	}
 }
 
@@ -1130,14 +1169,9 @@ func TestIntegration_ConfigReload_ZeroRoutes(t *testing.T) {
 	t.Cleanup(cancel)
 
 	authenticators := map[string]auth.Authenticator{}
-	registry := prometheus.NewRegistry()
-	metrics := observability.NewMetricsCollector(registry)
+	promRegistry := prometheus.NewRegistry()
+	metrics := observability.NewMetricsCollector(promRegistry)
 	limiter := ratelimit.NewMemoryLimiter(ctx)
-
-	corsConfig := config.CORSConfig{
-		AllowedOrigins: []string{"*"},
-		AllowedMethods: []string{"GET"},
-	}
 
 	initialRoutes := []config.RouteConfig{
 		{
@@ -1151,7 +1185,8 @@ func TestIntegration_ConfigReload_ZeroRoutes(t *testing.T) {
 		},
 	}
 
-	handler := buildTestHandler(t, initialRoutes, authenticators, limiter, metrics, corsConfig)
+	initialCfg := makeSimpleGatewayConfig(initialRoutes)
+	handler := buildTestHandler(t, initialCfg, authenticators, limiter, metrics)
 
 	var current atomic.Pointer[handlerRef]
 	current.Store(&handlerRef{h: handler})
@@ -1167,8 +1202,9 @@ func TestIntegration_ConfigReload_ZeroRoutes(t *testing.T) {
 		t.Fatalf("expected 200, got %d", rr.Code)
 	}
 
-	// Reload with zero routes — everything becomes 404.
-	emptyHandler := buildTestHandler(t, []config.RouteConfig{}, authenticators, limiter, metrics, corsConfig)
+	// Reload with zero routes -- everything becomes 404.
+	emptyCfg := makeSimpleGatewayConfig([]config.RouteConfig{})
+	emptyHandler := buildTestHandler(t, emptyCfg, authenticators, limiter, metrics)
 	current.Store(&handlerRef{h: emptyHandler})
 
 	rr = doRequest(mux, "GET", "/api/items", nil, "")
@@ -1222,66 +1258,95 @@ routez:
 }
 
 func TestBuildTestHandler_MiddlewareOrderMatchesProduction(t *testing.T) {
-	// Documents known differences and fails if either chain changes.
-	//
-	// Production global chain:  Recovery, RequestID, Logging, Metrics, CORS
-	// Test global chain:        Recovery, RequestID, Metrics, CORS
-	//   (Logging intentionally omitted in tests)
-	//
-	// Per-route differences:
-	//   - trustedProxies: production passes parsed CIDRs; test passes nil
-	//   - retry: test passes retry.WithSleep(func(time.Duration) {})
+	// Both the integration test helper (buildTestHandler) and production code
+	// (cmd/gateway/main.go) now delegate to pipeline.BuildHandler, guaranteeing
+	// identical middleware ordering. This test verifies the shared pipeline
+	// behaviorally: rate limiting runs before auth (outermost), so a rate-limited
+	// request returns 429 even if it carries valid auth credentials.
 
-	mainSrc, err := os.ReadFile("../cmd/gateway/main.go")
-	if err != nil {
-		t.Fatalf("failed to read cmd/gateway/main.go: %v", err)
-	}
-	testSrc, err := os.ReadFile("integration_test.go")
-	if err != nil {
-		t.Fatalf("failed to read integration_test.go: %v", err)
+	mock := &mockUpstream{}
+	upstreamServer := httptest.NewServer(mock)
+	t.Cleanup(upstreamServer.Close)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+
+	authenticators := map[string]auth.Authenticator{
+		"jwt_default": mustAuth(t, config.AuthProvider{
+			Type: "jwt",
+			JWT: &config.JWTConfig{
+				Secret:    testJWTSecret,
+				Algorithm: "HS256",
+				Issuer:    "test-issuer",
+			},
+		}),
 	}
 
-	prodRequired := []string{
-		"middleware.Recovery()",
-		"middleware.RequestID()",
-		"middleware.Logging(",
-		"metrics.Middleware()",
-		"middleware.CORS(",
+	promRegistry := prometheus.NewRegistry()
+	metrics := observability.NewMetricsCollector(promRegistry)
+	limiter := ratelimit.NewMemoryLimiter(ctx)
+
+	gwCfg := &config.GatewayConfig{
+		RateLimit: config.RateLimitGlobalConfig{Backend: "memory"},
+		AuthProviders: map[string]config.AuthProvider{
+			"jwt_default": {
+				Type: "jwt",
+				JWT: &config.JWTConfig{
+					Secret:    testJWTSecret,
+					Algorithm: "HS256",
+					Issuer:    "test-issuer",
+				},
+			},
+		},
+		MiddlewareDefinitions: map[string]config.MiddlewareDefinition{
+			"tight-limiter": {
+				Type: "rate_limit",
+				Config: mustYAMLNode(t, map[string]any{
+					"requests":   2,
+					"window":     "60s",
+					"key_source": "ip",
+				}),
+			},
+			"jwt-auth": {
+				Type: "auth",
+				Config: mustYAMLNode(t, map[string]any{
+					"providers": []string{"jwt_default"},
+				}),
+			},
+		},
+		Routes: []config.RouteConfig{
+			{
+				Name:  "order-test",
+				Match: config.MatchConfig{PathRegex: `^/order-test$`},
+				Upstream: config.UpstreamConfig{
+					URL:     upstreamServer.URL,
+					Timeout: 5 * time.Second,
+				},
+				Middlewares: []config.MiddlewareRef{
+					{Ref: "tight-limiter"},
+					{Ref: "jwt-auth"},
+				},
+			},
+		},
 	}
-	for _, mw := range prodRequired {
-		if !strings.Contains(string(mainSrc), mw) {
-			t.Errorf("production buildHandler missing expected middleware: %s", mw)
+
+	handler := buildTestHandler(t, gwCfg, authenticators, limiter, metrics)
+	headers := map[string]string{"Authorization": "Bearer " + validJWT()}
+
+	// Exhaust the rate limit.
+	for i := 0; i < 2; i++ {
+		rr := doRequest(handler, "GET", "/order-test", headers, "")
+		if rr.Code != http.StatusOK {
+			t.Fatalf("request %d: expected 200, got %d", i+1, rr.Code)
 		}
 	}
 
-	testRequired := []string{
-		"middleware.Recovery()",
-		"middleware.RequestID()",
-		"metrics.Middleware()",
-		"middleware.CORS(",
-	}
-	for _, mw := range testRequired {
-		if !strings.Contains(string(testSrc), mw) {
-			t.Errorf("test buildTestHandler missing expected middleware: %s", mw)
-		}
+	// Third request should be rate-limited (429), not auth-rejected.
+	// This confirms rate limiting is outermost (runs first) per the middleware
+	// order [tight-limiter, jwt-auth].
+	rr := doRequest(handler, "GET", "/order-test", headers, "")
+	if rr.Code != http.StatusTooManyRequests {
+		t.Fatalf("expected 429 (rate limited), got %d; rate limiter should run before auth", rr.Code)
 	}
 
-	perRouteRequired := []string{
-		"circuitbreaker.New(",
-		"retry.Retry(",
-		"retry.WithCircuitBreaker(",
-		"transform.RequestTransform(",
-		"transform.ResponseTransform(",
-		"middleware.CORSOverride(",
-		"auth.Middleware(",
-		"ratelimit.RateLimit(",
-	}
-	for _, mw := range perRouteRequired {
-		if !strings.Contains(string(mainSrc), mw) {
-			t.Errorf("production buildHandler missing per-route middleware: %s", mw)
-		}
-		if !strings.Contains(string(testSrc), mw) {
-			t.Errorf("test buildTestHandler missing per-route middleware: %s", mw)
-		}
-	}
 }

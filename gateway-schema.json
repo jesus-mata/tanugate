@@ -59,70 +59,6 @@
         "type"
       ]
     },
-    "BodyTransform": {
-      "properties": {
-        "inject_fields": {
-          "type": "object"
-        },
-        "strip_fields": {
-          "items": {
-            "type": "string"
-          },
-          "type": "array"
-        },
-        "rename_keys": {
-          "additionalProperties": {
-            "type": "string"
-          },
-          "type": "object"
-        }
-      },
-      "additionalProperties": false,
-      "type": "object"
-    },
-    "CORSConfig": {
-      "properties": {
-        "allowed_origins": {
-          "items": {
-            "type": "string"
-          },
-          "type": "array",
-          "description": "Origins allowed to make cross-origin requests"
-        },
-        "allowed_methods": {
-          "items": {
-            "type": "string"
-          },
-          "type": "array",
-          "description": "HTTP methods allowed for CORS requests"
-        },
-        "allowed_headers": {
-          "items": {
-            "type": "string"
-          },
-          "type": "array",
-          "description": "Headers allowed in CORS requests"
-        },
-        "exposed_headers": {
-          "items": {
-            "type": "string"
-          },
-          "type": "array",
-          "description": "Headers exposed to the browser"
-        },
-        "allow_credentials": {
-          "type": "boolean",
-          "description": "Whether credentials are allowed"
-        },
-        "max_age": {
-          "type": "integer",
-          "minimum": 0,
-          "description": "Max age in seconds for preflight cache"
-        }
-      },
-      "additionalProperties": false,
-      "type": "object"
-    },
     "CircuitBreakerConfig": {
       "properties": {
         "failure_threshold": {
@@ -145,42 +81,6 @@
             "500ms",
             "2h30m"
           ]
-        }
-      },
-      "additionalProperties": false,
-      "type": "object"
-    },
-    "DirectionTransform": {
-      "properties": {
-        "headers": {
-          "$ref": "#/$defs/HeaderTransform"
-        },
-        "body": {
-          "$ref": "#/$defs/BodyTransform"
-        }
-      },
-      "additionalProperties": false,
-      "type": "object"
-    },
-    "HeaderTransform": {
-      "properties": {
-        "add": {
-          "additionalProperties": {
-            "type": "string"
-          },
-          "type": "object"
-        },
-        "remove": {
-          "items": {
-            "type": "string"
-          },
-          "type": "array"
-        },
-        "rename": {
-          "additionalProperties": {
-            "type": "string"
-          },
-          "type": "object"
         }
       },
       "additionalProperties": false,
@@ -256,6 +156,38 @@
       "type": "object",
       "required": [
         "path_regex"
+      ]
+    },
+    "MiddlewareDefinition": {
+      "properties": {
+        "type": {
+          "type": "string",
+          "enum": [
+            "cors",
+            "rate_limit",
+            "auth",
+            "transform"
+          ]
+        },
+        "config": true
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "type"
+      ]
+    },
+    "MiddlewareRef": {
+      "properties": {
+        "ref": {
+          "type": "string"
+        },
+        "config": true
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "ref"
       ]
     },
     "OIDCConfig": {
@@ -430,18 +362,6 @@
       "additionalProperties": false,
       "type": "object"
     },
-    "RouteAuthConfig": {
-      "properties": {
-        "providers": {
-          "items": {
-            "type": "string"
-          },
-          "type": "array"
-        }
-      },
-      "additionalProperties": false,
-      "type": "object"
-    },
     "RouteConfig": {
       "properties": {
         "name": {
@@ -453,23 +373,25 @@
         "upstream": {
           "$ref": "#/$defs/UpstreamConfig"
         },
-        "cors": {
-          "$ref": "#/$defs/CORSConfig"
-        },
-        "auth": {
-          "$ref": "#/$defs/RouteAuthConfig"
-        },
-        "rate_limit": {
-          "$ref": "#/$defs/RouteLimitConfig"
-        },
         "retry": {
           "$ref": "#/$defs/RetryConfig"
         },
         "circuit_breaker": {
           "$ref": "#/$defs/CircuitBreakerConfig"
         },
-        "transform": {
-          "$ref": "#/$defs/TransformConfig"
+        "skip_middlewares": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array",
+          "description": "Names of global middlewares to skip for this route"
+        },
+        "middlewares": {
+          "items": {
+            "$ref": "#/$defs/MiddlewareRef"
+          },
+          "type": "array",
+          "description": "Ordered middleware refs for this route"
         }
       },
       "additionalProperties": false,
@@ -479,41 +401,6 @@
         "match",
         "upstream"
       ]
-    },
-    "RouteLimitConfig": {
-      "properties": {
-        "requests_per_window": {
-          "type": "integer",
-          "minimum": 1,
-          "description": "Max requests allowed per window"
-        },
-        "window": {
-          "type": "string",
-          "pattern": "^([0-9]+(ns|us|µs|ms|s|m|h))+$",
-          "description": "Rate limit window duration (e.g. 1m)",
-          "examples": [
-            "30s",
-            "1m",
-            "500ms",
-            "2h30m"
-          ]
-        },
-        "key_source": {
-          "type": "string",
-          "description": "Key source for rate limiting: ip or header:\u003cname\u003e"
-        },
-        "algorithm": {
-          "type": "string",
-          "enum": [
-            "sliding_window",
-            "leaky_bucket"
-          ],
-          "description": "Rate limiting algorithm",
-          "default": "sliding_window"
-        }
-      },
-      "additionalProperties": false,
-      "type": "object"
     },
     "ServerConfig": {
       "properties": {
@@ -579,25 +466,12 @@
           },
           "type": "array",
           "description": "CIDR ranges or IPs of trusted reverse proxies"
-        }
-      },
-      "additionalProperties": false,
-      "type": "object"
-    },
-    "TransformConfig": {
-      "properties": {
-        "request": {
-          "$ref": "#/$defs/DirectionTransform",
-          "description": "Request transformations"
         },
-        "response": {
-          "$ref": "#/$defs/DirectionTransform",
-          "description": "Response transformations"
-        },
-        "max_body_size": {
+        "max_header_bytes": {
           "type": "integer",
-          "minimum": 0,
-          "description": "Maximum body size in bytes for transformation"
+          "minimum": 4096,
+          "description": "Maximum size of request headers in bytes",
+          "default": 1048576
         }
       },
       "additionalProperties": false,
@@ -638,10 +512,6 @@
       "$ref": "#/$defs/LoggingConfig",
       "description": "Logging configuration"
     },
-    "cors": {
-      "$ref": "#/$defs/CORSConfig",
-      "description": "Global CORS settings"
-    },
     "rate_limit": {
       "$ref": "#/$defs/RateLimitGlobalConfig",
       "description": "Global rate limiting settings"
@@ -652,6 +522,20 @@
       },
       "type": "object",
       "description": "Named authentication providers"
+    },
+    "middleware_definitions": {
+      "additionalProperties": {
+        "$ref": "#/$defs/MiddlewareDefinition"
+      },
+      "type": "object",
+      "description": "Reusable middleware definitions"
+    },
+    "middlewares": {
+      "items": {
+        "$ref": "#/$defs/MiddlewareRef"
+      },
+      "type": "array",
+      "description": "Global middleware chain applied to all routes"
     },
     "routes": {
       "items": {

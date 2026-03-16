@@ -7,12 +7,13 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/jesus-mata/tanugate/internal/config"
+	"github.com/jesus-mata/tanugate/internal/middleware/auth"
 	"github.com/jesus-mata/tanugate/internal/observability"
-	"github.com/jesus-mata/tanugate/internal/router"
 	"github.com/prometheus/client_golang/prometheus"
 	dto "github.com/prometheus/client_model/go"
 )
@@ -38,64 +39,24 @@ func newTestMetrics() *observability.MetricsCollector {
 	return observability.NewMetricsCollector(reg)
 }
 
-func withRoute(r *http.Request, route *config.RouteConfig) *http.Request {
-	ctx := router.WithMatchedRoute(r.Context(), &router.MatchedRoute{
-		Config: route,
-	})
-	return r.WithContext(ctx)
-}
-
-func TestRateLimit_SkipsWhenNoConfig(t *testing.T) {
-	ml := &mockLimiter{allowed: true}
-	handler := RateLimit(ml, nil, nil)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusOK)
-	}))
-
-	// No route context at all.
-	req := httptest.NewRequest(http.MethodGet, "/test", nil)
-	rec := httptest.NewRecorder()
-	handler.ServeHTTP(rec, req)
-
-	if rec.Code != http.StatusOK {
-		t.Fatalf("expected 200, got %d", rec.Code)
-	}
-	if rec.Header().Get("X-RateLimit-Limit") != "" {
-		t.Fatal("expected no rate limit headers")
-	}
-
-	// Route context with nil RateLimit.
-	req = httptest.NewRequest(http.MethodGet, "/test", nil)
-	req = withRoute(req, &config.RouteConfig{Name: "test"})
-	rec = httptest.NewRecorder()
-	handler.ServeHTTP(rec, req)
-
-	if rec.Code != http.StatusOK {
-		t.Fatalf("expected 200, got %d", rec.Code)
-	}
-	if rec.Header().Get("X-RateLimit-Limit") != "" {
-		t.Fatal("expected no rate limit headers when RateLimit is nil")
-	}
-}
-
-func TestRateLimit_AllowedRequest(t *testing.T) {
+func TestNewRateLimitMiddleware_AllowedRequest(t *testing.T) {
 	resetTime := time.Now().Add(60 * time.Second)
 	ml := &mockLimiter{allowed: true, remaining: 9, resetAt: resetTime}
 	metrics := newTestMetrics()
 
-	handler := RateLimit(ml, metrics, nil)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	cfg := &config.RateLimitConfig{
+		Requests:  10,
+		Window:    time.Minute,
+		KeySource: "ip",
+		Algorithm: "sliding_window",
+	}
+
+	handler := NewRateLimitMiddleware(cfg, "test-route", "my-limiter", ml, metrics, nil)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	}))
 
 	req := httptest.NewRequest(http.MethodGet, "/api/test", nil)
 	req.RemoteAddr = "1.2.3.4:1234"
-	req = withRoute(req, &config.RouteConfig{
-		Name: "test-route",
-		RateLimit: &config.RouteLimitConfig{
-			RequestsPerWindow: 10,
-			Window:            time.Minute,
-			KeySource:         "ip",
-		},
-	})
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
 
@@ -113,25 +74,24 @@ func TestRateLimit_AllowedRequest(t *testing.T) {
 	}
 }
 
-func TestRateLimit_RejectedRequest(t *testing.T) {
+func TestNewRateLimitMiddleware_RejectedRequest(t *testing.T) {
 	resetTime := time.Now().Add(30 * time.Second)
 	ml := &mockLimiter{allowed: false, remaining: 0, resetAt: resetTime}
 	metrics := newTestMetrics()
 
-	handler := RateLimit(ml, metrics, nil)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	cfg := &config.RateLimitConfig{
+		Requests:  10,
+		Window:    time.Minute,
+		KeySource: "ip",
+		Algorithm: "sliding_window",
+	}
+
+	handler := NewRateLimitMiddleware(cfg, "test-route", "my-limiter", ml, metrics, nil)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		t.Fatal("handler should not be called when rate limited")
 	}))
 
 	req := httptest.NewRequest(http.MethodGet, "/api/test", nil)
 	req.RemoteAddr = "1.2.3.4:1234"
-	req = withRoute(req, &config.RouteConfig{
-		Name: "test-route",
-		RateLimit: &config.RouteLimitConfig{
-			RequestsPerWindow: 10,
-			Window:            time.Minute,
-			KeySource:         "ip",
-		},
-	})
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
 
@@ -143,26 +103,25 @@ func TestRateLimit_RejectedRequest(t *testing.T) {
 	}
 }
 
-func TestRateLimit_ResponseHeaders_AlwaysSet(t *testing.T) {
+func TestNewRateLimitMiddleware_ResponseHeaders_AlwaysSet(t *testing.T) {
 	resetTime := time.Now().Add(60 * time.Second)
 	ml := &mockLimiter{allowed: true, remaining: 5, resetAt: resetTime}
 
+	cfg := &config.RateLimitConfig{
+		Requests:  100,
+		Window:    time.Minute,
+		KeySource: "ip",
+		Algorithm: "sliding_window",
+	}
+
 	called := false
-	handler := RateLimit(ml, nil, nil)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	handler := NewRateLimitMiddleware(cfg, "svc", "limiter", ml, nil, nil)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		called = true
 		w.WriteHeader(http.StatusOK)
 	}))
 
 	req := httptest.NewRequest(http.MethodGet, "/api/test", nil)
 	req.RemoteAddr = "10.0.0.1:5000"
-	req = withRoute(req, &config.RouteConfig{
-		Name: "svc",
-		RateLimit: &config.RouteLimitConfig{
-			RequestsPerWindow: 100,
-			Window:            time.Minute,
-			KeySource:         "ip",
-		},
-	})
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
 
@@ -176,24 +135,23 @@ func TestRateLimit_ResponseHeaders_AlwaysSet(t *testing.T) {
 	}
 }
 
-func TestRateLimit_429ResponseFormat(t *testing.T) {
+func TestNewRateLimitMiddleware_429ResponseFormat(t *testing.T) {
 	resetTime := time.Now().Add(45 * time.Second)
 	ml := &mockLimiter{allowed: false, remaining: 0, resetAt: resetTime}
 
-	handler := RateLimit(ml, nil, nil)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	cfg := &config.RateLimitConfig{
+		Requests:  5,
+		Window:    time.Minute,
+		KeySource: "ip",
+		Algorithm: "sliding_window",
+	}
+
+	handler := NewRateLimitMiddleware(cfg, "svc", "limiter", ml, nil, nil)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		t.Fatal("should not be called")
 	}))
 
 	req := httptest.NewRequest(http.MethodGet, "/api/test", nil)
 	req.RemoteAddr = "1.2.3.4:1234"
-	req = withRoute(req, &config.RouteConfig{
-		Name: "svc",
-		RateLimit: &config.RouteLimitConfig{
-			RequestsPerWindow: 5,
-			Window:            time.Minute,
-			KeySource:         "ip",
-		},
-	})
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
 
@@ -250,7 +208,7 @@ func TestKeyExtract_IP_WithTrustedProxies(t *testing.T) {
 	req.Header.Set("X-Forwarded-For", "10.0.0.1, 172.16.0.1, 192.168.1.1")
 
 	// Walk right-to-left: 192.168.1.1 is trusted, 172.16.0.1 is trusted,
-	// 10.0.0.1 is NOT trusted → return 10.0.0.1.
+	// 10.0.0.1 is NOT trusted -> return 10.0.0.1.
 	key := extractKey(req, "ip", trusted)
 	if key != "10.0.0.1" {
 		t.Fatalf("expected 10.0.0.1, got %s", key)
@@ -286,7 +244,7 @@ func TestKeyExtract_IP_AllTrusted(t *testing.T) {
 	req.RemoteAddr = "192.168.1.50:12345"
 	req.Header.Set("X-Forwarded-For", "10.0.0.1, 172.16.0.1, 192.168.1.1")
 
-	// All XFF entries are trusted → fall back to RemoteAddr.
+	// All XFF entries are trusted -> fall back to RemoteAddr.
 	key := extractKey(req, "ip", trusted)
 	if key != "192.168.1.50" {
 		t.Fatalf("expected 192.168.1.50 (RemoteAddr fallback), got %s", key)
@@ -314,25 +272,24 @@ func TestKeyExtract_Header_Missing(t *testing.T) {
 	}
 }
 
-func TestRateLimit_LimiterError_FailOpen(t *testing.T) {
+func TestNewRateLimitMiddleware_LimiterError_FailOpen(t *testing.T) {
 	ml := &mockLimiter{err: errors.New("redis connection refused")}
 
+	cfg := &config.RateLimitConfig{
+		Requests:  10,
+		Window:    time.Minute,
+		KeySource: "ip",
+		Algorithm: "sliding_window",
+	}
+
 	called := false
-	handler := RateLimit(ml, nil, nil)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	handler := NewRateLimitMiddleware(cfg, "svc", "limiter", ml, nil, nil)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		called = true
 		w.WriteHeader(http.StatusOK)
 	}))
 
 	req := httptest.NewRequest(http.MethodGet, "/api/test", nil)
 	req.RemoteAddr = "1.2.3.4:1234"
-	req = withRoute(req, &config.RouteConfig{
-		Name: "svc",
-		RateLimit: &config.RouteLimitConfig{
-			RequestsPerWindow: 10,
-			Window:            time.Minute,
-			KeySource:         "ip",
-		},
-	})
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
 
@@ -344,24 +301,23 @@ func TestRateLimit_LimiterError_FailOpen(t *testing.T) {
 	}
 }
 
-func TestRateLimit_LimiterError_FailOpen_MetricIncremented(t *testing.T) {
+func TestNewRateLimitMiddleware_LimiterError_FailOpen_MetricIncremented(t *testing.T) {
 	ml := &mockLimiter{err: errors.New("redis connection refused")}
 	metrics := newTestMetrics()
 
-	handler := RateLimit(ml, metrics, nil)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	cfg := &config.RateLimitConfig{
+		Requests:  10,
+		Window:    time.Minute,
+		KeySource: "ip",
+		Algorithm: "sliding_window",
+	}
+
+	handler := NewRateLimitMiddleware(cfg, "svc", "limiter", ml, metrics, nil)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	}))
 
 	req := httptest.NewRequest(http.MethodGet, "/api/test", nil)
 	req.RemoteAddr = "1.2.3.4:1234"
-	req = withRoute(req, &config.RouteConfig{
-		Name: "svc",
-		RateLimit: &config.RouteLimitConfig{
-			RequestsPerWindow: 10,
-			Window:            time.Minute,
-			KeySource:         "ip",
-		},
-	})
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
 
@@ -371,7 +327,7 @@ func TestRateLimit_LimiterError_FailOpen_MetricIncremented(t *testing.T) {
 
 	// Verify the fail-open metric was incremented.
 	m := &dto.Metric{}
-	if err := metrics.RateLimitErrors.WithLabelValues("svc").Write(m); err != nil {
+	if err := metrics.RateLimitErrors.WithLabelValues("svc", "limiter").Write(m); err != nil {
 		t.Fatalf("failed to read metric: %v", err)
 	}
 	if got := m.GetCounter().GetValue(); got != 1 {
@@ -379,60 +335,56 @@ func TestRateLimit_LimiterError_FailOpen_MetricIncremented(t *testing.T) {
 	}
 }
 
-func TestRateLimit_CompositeKey(t *testing.T) {
+func TestNewRateLimitMiddleware_CompositeKey(t *testing.T) {
 	resetTime := time.Now().Add(60 * time.Second)
 	ml := &mockLimiter{allowed: true, remaining: 9, resetAt: resetTime}
 
-	handler := RateLimit(ml, nil, nil)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	cfg := &config.RateLimitConfig{
+		Requests:  100,
+		Window:    time.Minute,
+		KeySource: "ip",
+		Algorithm: "sliding_window",
+	}
+
+	handler := NewRateLimitMiddleware(cfg, "users-api", "ip-limiter", ml, nil, nil)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	}))
 
 	req := httptest.NewRequest(http.MethodGet, "/api/test", nil)
 	req.RemoteAddr = "10.0.0.5:9999"
-	req = withRoute(req, &config.RouteConfig{
-		Name: "users-api",
-		RateLimit: &config.RouteLimitConfig{
-			RequestsPerWindow: 100,
-			Window:            time.Minute,
-			KeySource:         "ip",
-			Algorithm:         "sliding_window",
-		},
-	})
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
 
-	expected := "rl:sliding_window:users-api:10.0.0.5"
+	expected := "rl:sliding_window:users-api:ip-limiter:10.0.0.5"
 	if ml.lastKey != expected {
 		t.Fatalf("expected composite key %q, got %q", expected, ml.lastKey)
 	}
 }
 
-func TestRateLimit_PassesAlgorithmToLimiter(t *testing.T) {
+func TestNewRateLimitMiddleware_PassesAlgorithmToLimiter(t *testing.T) {
 	resetTime := time.Now().Add(60 * time.Second)
 	ml := &mockLimiter{allowed: true, remaining: 9, resetAt: resetTime}
 
-	handler := RateLimit(ml, nil, nil)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	cfg := &config.RateLimitConfig{
+		Requests:  50,
+		Window:    time.Minute,
+		KeySource: "ip",
+		Algorithm: "leaky_bucket",
+	}
+
+	handler := NewRateLimitMiddleware(cfg, "lb-route", "my-limiter", ml, nil, nil)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	}))
 
 	req := httptest.NewRequest(http.MethodGet, "/api/test", nil)
 	req.RemoteAddr = "10.0.0.5:9999"
-	req = withRoute(req, &config.RouteConfig{
-		Name: "lb-route",
-		RateLimit: &config.RouteLimitConfig{
-			RequestsPerWindow: 50,
-			Window:            time.Minute,
-			KeySource:         "ip",
-			Algorithm:         "leaky_bucket",
-		},
-	})
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
 
 	if ml.lastAlgorithm != AlgorithmLeakyBucket {
 		t.Fatalf("expected algorithm %q, got %q", AlgorithmLeakyBucket, ml.lastAlgorithm)
 	}
-	expectedKey := "rl:leaky_bucket:lb-route:10.0.0.5"
+	expectedKey := "rl:leaky_bucket:lb-route:my-limiter:10.0.0.5"
 	if ml.lastKey != expectedKey {
 		t.Fatalf("expected composite key %q, got %q", expectedKey, ml.lastKey)
 	}
@@ -505,4 +457,142 @@ func TestParseTrustedProxies(t *testing.T) {
 			t.Fatal("expected error for invalid CIDR")
 		}
 	})
+}
+
+func TestNewRateLimitMiddleware_NilConfig(t *testing.T) {
+	called := false
+	mw := NewRateLimitMiddleware(nil, "route", "mw", nil, nil, nil)
+	handler := mw(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		called = true
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if !called {
+		t.Fatal("expected pass-through handler to call next")
+	}
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", rec.Code)
+	}
+}
+
+func TestExtractKey_Claim_Present(t *testing.T) {
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.RemoteAddr = "1.2.3.4:1234"
+	ctx := auth.WithAuthResult(req.Context(), &auth.AuthResult{
+		Claims: map[string]any{"tenant_id": "t-123"},
+	})
+	req = req.WithContext(ctx)
+
+	key := extractKey(req, "claim:tenant_id", nil)
+	if key != "t-123" {
+		t.Fatalf("expected t-123, got %s", key)
+	}
+}
+
+func TestExtractKey_Claim_NoAuthResult(t *testing.T) {
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.RemoteAddr = "1.2.3.4:1234"
+
+	key := extractKey(req, "claim:tenant_id", nil)
+	if key != "1.2.3.4" {
+		t.Fatalf("expected IP fallback 1.2.3.4, got %s", key)
+	}
+}
+
+func TestExtractKey_Claim_MissingClaim(t *testing.T) {
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.RemoteAddr = "1.2.3.4:1234"
+	ctx := auth.WithAuthResult(req.Context(), &auth.AuthResult{
+		Claims: map[string]any{"sub": "user-1"},
+	})
+	req = req.WithContext(ctx)
+
+	key := extractKey(req, "claim:tenant_id", nil)
+	if key != "1.2.3.4" {
+		t.Fatalf("expected IP fallback 1.2.3.4, got %s", key)
+	}
+}
+
+func TestExtractKey_Claim_NonStringValue(t *testing.T) {
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.RemoteAddr = "1.2.3.4:1234"
+	ctx := auth.WithAuthResult(req.Context(), &auth.AuthResult{
+		Claims: map[string]any{"org_id": float64(42)},
+	})
+	req = req.WithContext(ctx)
+
+	key := extractKey(req, "claim:org_id", nil)
+	if key != "42" {
+		t.Fatalf("expected 42, got %s", key)
+	}
+}
+
+func TestExtractKey_Claim_BoolValue(t *testing.T) {
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.RemoteAddr = "1.2.3.4:1234"
+	ctx := auth.WithAuthResult(req.Context(), &auth.AuthResult{
+		Claims: map[string]any{"is_admin": true},
+	})
+	req = req.WithContext(ctx)
+
+	key := extractKey(req, "claim:is_admin", nil)
+	if key != "true" {
+		t.Fatalf("expected true, got %s", key)
+	}
+}
+
+func TestExtractKey_Claim_ComplexValue(t *testing.T) {
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.RemoteAddr = "1.2.3.4:1234"
+	ctx := auth.WithAuthResult(req.Context(), &auth.AuthResult{
+		Claims: map[string]any{"roles": []any{"a", "b"}},
+	})
+	req = req.WithContext(ctx)
+
+	key := extractKey(req, "claim:roles", nil)
+	if key != `["a","b"]` {
+		t.Fatalf("expected [\"a\",\"b\"], got %s", key)
+	}
+}
+
+func TestExtractKey_Claim_NilValue(t *testing.T) {
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.RemoteAddr = "1.2.3.4:1234"
+	ctx := auth.WithAuthResult(req.Context(), &auth.AuthResult{
+		Claims: map[string]any{"tenant_id": nil},
+	})
+	req = req.WithContext(ctx)
+
+	key := extractKey(req, "claim:tenant_id", nil)
+	if key != "1.2.3.4" {
+		t.Fatalf("expected IP fallback 1.2.3.4 for nil claim, got %s", key)
+	}
+}
+
+func TestExtractKey_Header_LongValue(t *testing.T) {
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.RemoteAddr = "1.2.3.4:1234"
+	longVal := strings.Repeat("x", 1000)
+	req.Header.Set("X-Tenant-ID", longVal)
+
+	key := extractKey(req, "header:X-Tenant-ID", nil)
+	if len(key) != 32 {
+		t.Fatalf("expected 32-char hex hash for long header, got %d chars: %s", len(key), key)
+	}
+}
+
+func TestExtractKey_Header_ShortValue(t *testing.T) {
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.RemoteAddr = "1.2.3.4:1234"
+	shortVal := strings.Repeat("x", 100)
+	req.Header.Set("X-Tenant-ID", shortVal)
+
+	key := extractKey(req, "header:X-Tenant-ID", nil)
+	if key != shortVal {
+		t.Fatalf("expected short header value to be returned as-is, got %s", key)
+	}
 }

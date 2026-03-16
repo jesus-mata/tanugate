@@ -9,16 +9,11 @@ import (
 	"github.com/jesus-mata/tanugate/internal/config"
 )
 
-// corsOverrideMarker is an internal response header used to signal that a
-// per-route CORS override has been applied. It is removed before the response
-// is sent to the client.
-const corsOverrideMarker = "X-Gateway-Cors-Override"
-
-// CORS returns a middleware that handles CORS preflight requests (returning
-// 204 without forwarding upstream) and injects CORS headers on regular
-// requests using the provided global configuration.
-func CORS(globalCfg config.CORSConfig) Middleware {
-	if isWildcard(globalCfg.AllowedOrigins) && globalCfg.AllowCredentials {
+// CORSMiddleware returns a middleware that handles CORS preflight requests
+// (returning 204 without forwarding upstream) and injects CORS headers on
+// regular cross-origin requests using the provided configuration.
+func CORSMiddleware(cfg config.CORSConfig) Middleware {
+	if isWildcard(cfg.AllowedOrigins) && cfg.AllowCredentials {
 		slog.Warn("CORS: wildcard origin with allow_credentials is invalid per spec; will use requesting origin instead of *")
 	}
 	return func(next http.Handler) http.Handler {
@@ -30,41 +25,14 @@ func CORS(globalCfg config.CORSConfig) Middleware {
 			}
 
 			if isPreflight(r) {
-				handlePreflight(w, origin, globalCfg)
+				handlePreflight(w, origin, cfg)
 				return
 			}
 
 			crw := &corsResponseWriter{
 				ResponseWriter: w,
 				origin:         origin,
-				cfg:            globalCfg,
-				isOverride:     false,
-			}
-			next.ServeHTTP(crw, r)
-		})
-	}
-}
-
-// CORSOverride returns a per-route middleware that completely replaces the
-// global CORS configuration for matching requests. It does not handle
-// preflights (those are handled by the global CORS middleware before routing).
-func CORSOverride(routeCfg config.CORSConfig) Middleware {
-	if isWildcard(routeCfg.AllowedOrigins) && routeCfg.AllowCredentials {
-		slog.Warn("CORS: route override has wildcard origin with allow_credentials; will use requesting origin instead of *")
-	}
-	return func(next http.Handler) http.Handler {
-		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			origin := r.Header.Get("Origin")
-			if origin == "" {
-				next.ServeHTTP(w, r)
-				return
-			}
-
-			crw := &corsResponseWriter{
-				ResponseWriter: w,
-				origin:         origin,
-				cfg:            routeCfg,
-				isOverride:     true,
+				cfg:            cfg,
 			}
 			next.ServeHTTP(crw, r)
 		})
@@ -78,26 +46,12 @@ type corsResponseWriter struct {
 	origin      string
 	cfg         config.CORSConfig
 	headersSent bool
-	isOverride  bool
 }
 
 func (crw *corsResponseWriter) WriteHeader(code int) {
 	if !crw.headersSent {
 		crw.headersSent = true
-		h := crw.Header()
-		if crw.isOverride {
-			// Per-route override: inject headers and set marker so the
-			// outer (global) corsResponseWriter skips its own injection.
-			injectCORSHeaders(crw.ResponseWriter, crw.origin, crw.cfg)
-			h.Set(corsOverrideMarker, "1")
-		} else {
-			if h.Get(corsOverrideMarker) != "" {
-				// Per-route override already applied — clean up marker.
-				h.Del(corsOverrideMarker)
-			} else {
-				injectCORSHeaders(crw.ResponseWriter, crw.origin, crw.cfg)
-			}
-		}
+		injectCORSHeaders(crw.ResponseWriter, crw.origin, crw.cfg)
 	}
 	crw.ResponseWriter.WriteHeader(code)
 }

@@ -118,13 +118,19 @@ func TestMetrics_RouteLabel(t *testing.T) {
 	m, _ := newTestCollector(t)
 	mw := m.Middleware()
 
+	mr := &router.MatchedRoute{Config: &config.RouteConfig{Name: "my-route"}}
+
+	// The inner handler simulates what the real router does: it reads the
+	// RouteHolder from the context (installed by the metrics middleware) and
+	// populates it with the matched route.
 	handler := mw(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if holder := router.RouteHolderFromContext(r.Context()); holder != nil {
+			holder.Route = mr
+		}
 		w.WriteHeader(http.StatusOK)
 	}))
 
 	req := httptest.NewRequest(http.MethodGet, "/test", nil)
-	mr := &router.MatchedRoute{Config: &config.RouteConfig{Name: "my-route"}}
-	req = req.WithContext(router.WithMatchedRoute(req.Context(), mr))
 	handler.ServeHTTP(httptest.NewRecorder(), req)
 
 	val := counterValue(t, m.RequestsTotal, "my-route", "GET", "200")

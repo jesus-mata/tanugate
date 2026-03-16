@@ -12,6 +12,32 @@ import (
 // matchedRouteKey is an unexported context key used to store the MatchedRoute.
 type matchedRouteKey struct{}
 
+// routeHolderKey is an unexported context key used to store a RouteHolder.
+type routeHolderKey struct{}
+
+// RouteHolder is a mutable container that the router populates with the
+// matched route after dispatch. It allows middleware that runs before the
+// router (and therefore only has access to the original request context) to
+// read route information after the handler returns.
+type RouteHolder struct {
+	Route *MatchedRoute
+}
+
+// WithRouteHolder returns a new context carrying an empty RouteHolder and the
+// holder itself. Callers should inject this context into the request before
+// dispatching through the router, then read holder.Route afterwards.
+func WithRouteHolder(ctx context.Context) (context.Context, *RouteHolder) {
+	h := &RouteHolder{}
+	return context.WithValue(ctx, routeHolderKey{}, h), h
+}
+
+// RouteHolderFromContext retrieves the RouteHolder stored in ctx, or nil if
+// none is present.
+func RouteHolderFromContext(ctx context.Context) *RouteHolder {
+	h, _ := ctx.Value(routeHolderKey{}).(*RouteHolder)
+	return h
+}
+
 // MatchedRoute holds the configuration and extracted path parameters for the
 // route that matched an incoming request.
 type MatchedRoute struct {
@@ -80,7 +106,11 @@ func (rt *Router) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 
 		if cr.methods != nil && !cr.methods[r.Method] {
-			continue
+			if r.Method != http.MethodOptions {
+				continue
+			}
+			// Allow OPTIONS through for path-matched routes so CORS
+			// middleware can handle preflight requests.
 		}
 
 		// Extract named capture groups into PathParams.
@@ -95,6 +125,12 @@ func (rt *Router) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		mr := &MatchedRoute{
 			Config:     cr.config,
 			PathParams: params,
+		}
+
+		// Populate the RouteHolder from the original request context so that
+		// middleware running before the router can read the matched route.
+		if holder := RouteHolderFromContext(r.Context()); holder != nil {
+			holder.Route = mr
 		}
 
 		ctx := context.WithValue(r.Context(), matchedRouteKey{}, mr)

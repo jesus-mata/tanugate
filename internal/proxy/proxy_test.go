@@ -54,7 +54,7 @@ func TestProxy_ForwardsRequest(t *testing.T) {
 		},
 	}
 
-	handler := NewProxyHandler(routeCfg)
+	handler := NewProxyHandler(routeCfg, nil)
 
 	mr := &router.MatchedRoute{
 		Config:     routeCfg,
@@ -96,7 +96,7 @@ func TestProxy_PathRewrite(t *testing.T) {
 		},
 	}
 
-	handler := NewProxyHandler(routeCfg)
+	handler := NewProxyHandler(routeCfg, nil)
 
 	mr := &router.MatchedRoute{
 		Config:     routeCfg,
@@ -131,7 +131,7 @@ func TestProxy_PathRewriteMultipleParams(t *testing.T) {
 		},
 	}
 
-	handler := NewProxyHandler(routeCfg)
+	handler := NewProxyHandler(routeCfg, nil)
 
 	mr := &router.MatchedRoute{
 		Config: routeCfg,
@@ -168,7 +168,7 @@ func TestProxy_NoPathRewrite(t *testing.T) {
 		},
 	}
 
-	handler := NewProxyHandler(routeCfg)
+	handler := NewProxyHandler(routeCfg, nil)
 
 	mr := &router.MatchedRoute{
 		Config:     routeCfg,
@@ -198,7 +198,7 @@ func TestProxy_UpstreamDown_502(t *testing.T) {
 		},
 	}
 
-	handler := NewProxyHandler(routeCfg)
+	handler := NewProxyHandler(routeCfg, nil)
 
 	mr := &router.MatchedRoute{
 		Config:     routeCfg,
@@ -226,7 +226,7 @@ func TestProxy_ErrorResponseFormat(t *testing.T) {
 		},
 	}
 
-	handler := NewProxyHandler(routeCfg)
+	handler := NewProxyHandler(routeCfg, nil)
 
 	mr := &router.MatchedRoute{
 		Config:     routeCfg,
@@ -268,7 +268,7 @@ func TestProxy_HostHeaderRewrite(t *testing.T) {
 		},
 	}
 
-	handler := NewProxyHandler(routeCfg)
+	handler := NewProxyHandler(routeCfg, nil)
 
 	mr := &router.MatchedRoute{
 		Config:     routeCfg,

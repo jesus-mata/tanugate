@@ -32,7 +32,7 @@ Tanugate is an API gateway designed to sit between your clients and backend serv
 - **Regex-based path matching** with named capture groups (`(?P<name>...)`)
 - **Method filtering** per route (optional — all methods allowed if omitted)
 - **Path rewriting** with parameter substitution from captured groups
-- **First-match routing** — routes are evaluated in configuration order
+- **First-match routing** — routes are evaluated in configuration order; route names must be unique
 
 ```yaml
 routes:
@@ -121,7 +121,8 @@ Per-route rate limiting with two backends and per-route algorithm selection (Red
 
 Key extraction options:
 - `ip` (default) — client IP with trusted proxy support via `X-Forwarded-For`
-- `header:<name>` — extract key from a request header
+- `header:<name>` — extract key from a request header (falls back to IP if header is missing)
+- `claim:<name>` — extract key from a JWT claim (requires an auth middleware earlier in the chain; falls back to IP if claim is missing or `null`)
 
 Response headers on every request:
 
@@ -222,16 +223,24 @@ routes:
 
 ### CORS
 
-Global CORS configuration with per-route overrides. Handles preflight `OPTIONS` requests automatically.
+CORS is configured via `middleware_definitions` and applied through `middlewares` refs. Handles preflight `OPTIONS` requests automatically.
+
+> **Migration note:** CORS was previously a hardcoded top-level `cors:` field applied globally. It is now definition-based — routes without a CORS middleware ref in their effective chain receive **no CORS headers** (including 404 responses where no route matched). To override CORS for a specific route, use `skip_middlewares` to remove the global CORS and add a route-specific CORS ref.
 
 ```yaml
-cors:
-  allowed_origins: ["https://app.example.com"]
-  allowed_methods: ["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"]
-  allowed_headers: ["Authorization", "Content-Type", "X-API-Key"]
-  exposed_headers: ["X-Request-ID", "X-RateLimit-Remaining"]
-  allow_credentials: true
-  max_age: 3600
+middleware_definitions:
+  global-cors:
+    type: cors
+    config:
+      allowed_origins: ["https://app.example.com"]
+      allowed_methods: ["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"]
+      allowed_headers: ["Authorization", "Content-Type", "X-API-Key"]
+      exposed_headers: ["X-Request-ID", "X-RateLimit-Remaining"]
+      allow_credentials: true
+      max_age: 3600
+
+middlewares:
+  - ref: global-cors
 ```
 
 ### Observability
@@ -339,13 +348,19 @@ server:
 logging:
   level: "info"    # debug | info | warn | error
 
-cors:
-  allowed_origins: ["${CORS_ALLOWED_ORIGIN}"]
-  allowed_methods: ["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"]
-  allowed_headers: ["Authorization", "Content-Type", "X-API-Key", "X-Request-ID"]
-  exposed_headers: ["X-Request-ID", "X-RateLimit-Remaining", "X-RateLimit-Reset"]
-  allow_credentials: true
-  max_age: 3600
+middleware_definitions:
+  global-cors:
+    type: cors
+    config:
+      allowed_origins: ["${CORS_ALLOWED_ORIGIN}"]
+      allowed_methods: ["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"]
+      allowed_headers: ["Authorization", "Content-Type", "X-API-Key", "X-Request-ID"]
+      exposed_headers: ["X-Request-ID", "X-RateLimit-Remaining", "X-RateLimit-Reset"]
+      allow_credentials: true
+      max_age: 3600
+
+middlewares:
+  - ref: global-cors
 
 rate_limit:
   backend: "memory"    # memory | redis
@@ -483,7 +498,7 @@ All sensitive values should be injected via environment variables:
 | `JWT_SECRET` | JWT HMAC signing secret |
 | `REDIS_ADDR` | Redis address (`host:port`) |
 | `REDIS_PASSWORD` | Redis password |
-| `CORS_ALLOWED_ORIGIN` | Allowed CORS origin |
+| `CORS_ALLOWED_ORIGIN` | Allowed CORS origin (used in `middleware_definitions`) |
 | `RATE_LIMIT_BACKEND` | Rate limit backend (`memory` or `redis`) |
 
 ## Development

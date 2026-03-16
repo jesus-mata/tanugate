@@ -68,14 +68,14 @@ func NewMetricsCollector(reg prometheus.Registerer) *MetricsCollector {
 				Name: "gateway_rate_limit_rejected_total",
 				Help: "Total number of requests rejected by rate limiting.",
 			},
-			[]string{"route"},
+			[]string{"route", "middleware"},
 		),
 		RateLimitErrors: prometheus.NewCounterVec(
 			prometheus.CounterOpts{
 				Name: "gateway_rate_limit_errors_total",
 				Help: "Total number of rate limiter backend errors (fail-open events).",
 			},
-			[]string{"route"},
+			[]string{"route", "middleware"},
 		),
 		UpstreamErrors: prometheus.NewCounterVec(
 			prometheus.CounterOpts{
@@ -107,11 +107,16 @@ func (m *MetricsCollector) Middleware() middleware.Middleware {
 			start := time.Now()
 			ww := middleware.WrapResponseWriter(w)
 
-			next.ServeHTTP(ww, r)
+			// Inject a RouteHolder into the request context before dispatch.
+			// The router will populate it with the matched route, allowing us
+			// to read the route name even though the router creates a new
+			// request (r.WithContext) that this middleware never sees.
+			ctx, holder := router.WithRouteHolder(r.Context())
+			next.ServeHTTP(ww, r.WithContext(ctx))
 
 			route := "unknown"
-			if mr := router.RouteFromContext(r.Context()); mr != nil {
-				route = mr.Config.Name
+			if holder.Route != nil {
+				route = holder.Route.Config.Name
 			}
 
 			duration := time.Since(start).Seconds()

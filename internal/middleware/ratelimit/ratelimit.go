@@ -2,17 +2,21 @@ package ratelimit
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"log/slog"
 	"net"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
+	"github.com/jesus-mata/tanugate/internal/config"
 	"github.com/jesus-mata/tanugate/internal/middleware"
+	"github.com/jesus-mata/tanugate/internal/middleware/auth"
 	"github.com/jesus-mata/tanugate/internal/observability"
-	"github.com/jesus-mata/tanugate/internal/router"
 )
 
 // Algorithm identifies the rate limiting strategy used by a Limiter.
@@ -57,46 +61,45 @@ func ParseTrustedProxies(cidrs []string) ([]*net.IPNet, error) {
 	return nets, nil
 }
 
-// RateLimit returns a middleware that enforces per-route rate limits using the
-// provided Limiter backend. It reads rate limit configuration from the matched
-// route context. Routes without rate_limit config pass through unchanged.
-func RateLimit(limiter Limiter, metrics *observability.MetricsCollector, trustedProxies []*net.IPNet) middleware.Middleware {
+// NewRateLimitMiddleware creates a rate limit middleware with config bound at
+// construction time. The middleware closes over the provided configuration
+// instead of reading it from route context, enabling multiple rate limit
+// middleware instances per route with distinct keys and metrics.
+func NewRateLimitMiddleware(cfg *config.RateLimitConfig, routeName, middlewareName string,
+	limiter Limiter, metrics *observability.MetricsCollector, trustedProxies []*net.IPNet) middleware.Middleware {
+	if cfg == nil {
+		return func(next http.Handler) http.Handler { return next }
+	}
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			mr := router.RouteFromContext(r.Context())
-			if mr == nil || mr.Config.RateLimit == nil {
-				next.ServeHTTP(w, r)
-				return
-			}
-
-			rl := mr.Config.RateLimit
-			extracted := extractKey(r, rl.KeySource, trustedProxies)
-			algorithm := Algorithm(rl.Algorithm)
-			compositeKey := "rl:" + string(algorithm) + ":" + mr.Config.Name + ":" + extracted
+			extracted := extractKey(r, cfg.KeySource, trustedProxies)
+			algorithm := Algorithm(cfg.Algorithm)
+			compositeKey := "rl:" + string(algorithm) + ":" + routeName + ":" + middlewareName + ":" + extracted
 
 			allowed, remaining, resetAt, err := limiter.Allow(
 				r.Context(),
 				compositeKey,
-				rl.RequestsPerWindow,
-				rl.Window,
+				cfg.Requests,
+				cfg.Window,
 				algorithm,
 			)
 
 			if err != nil {
 				slog.Error("rate limiter backend error, failing open",
-					"route", mr.Config.Name,
-					"key", compositeKey,
+					"route", routeName,
+					"middleware", middlewareName,
+					"key_source", cfg.KeySource,
 					"error", err,
 				)
 				if metrics != nil {
-					metrics.RateLimitErrors.WithLabelValues(mr.Config.Name).Inc()
+					metrics.RateLimitErrors.WithLabelValues(routeName, middlewareName).Inc()
 				}
 				next.ServeHTTP(w, r)
 				return
 			}
 
 			resetUnix := resetAt.Unix()
-			w.Header().Set("X-RateLimit-Limit", fmt.Sprintf("%d", rl.RequestsPerWindow))
+			w.Header().Set("X-RateLimit-Limit", fmt.Sprintf("%d", cfg.Requests))
 			w.Header().Set("X-RateLimit-Remaining", fmt.Sprintf("%d", remaining))
 			w.Header().Set("X-RateLimit-Reset", fmt.Sprintf("%d", resetUnix))
 
@@ -113,7 +116,7 @@ func RateLimit(limiter Limiter, metrics *observability.MetricsCollector, trusted
 					slog.Debug("failed to encode 429 response body", "error", err)
 				}
 				if metrics != nil {
-					metrics.RateLimitRejected.WithLabelValues(mr.Config.Name).Inc()
+					metrics.RateLimitRejected.WithLabelValues(routeName, middlewareName).Inc()
 				}
 				return
 			}
@@ -124,7 +127,7 @@ func RateLimit(limiter Limiter, metrics *observability.MetricsCollector, trusted
 }
 
 // extractKey resolves a rate-limit key from the request based on keySource.
-// Supported formats: "ip", "header:<name>".
+// Supported formats: "ip", "header:<name>", "claim:<name>".
 func extractKey(r *http.Request, keySource string, trustedProxies []*net.IPNet) string {
 	switch {
 	case keySource == "" || keySource == "ip":
@@ -139,11 +142,53 @@ func extractKey(r *http.Request, keySource string, trustedProxies []*net.IPNet) 
 			)
 			return extractIP(r, trustedProxies)
 		}
-		return val
+		return truncateKey(val)
+
+	case strings.HasPrefix(keySource, "claim:"):
+		claimName := strings.TrimPrefix(keySource, "claim:")
+		ar := auth.ResultFromContext(r.Context())
+		if ar == nil || ar.Claims == nil {
+			slog.Warn("rate limit claim key: no auth result in context, falling back to IP", "claim", claimName)
+			return extractIP(r, trustedProxies)
+		}
+		val, ok := ar.Claims[claimName]
+		if !ok || val == nil {
+			slog.Warn("rate limit claim key not found or nil, falling back to IP", "claim", claimName)
+			return extractIP(r, trustedProxies)
+		}
+		var s string
+		switch v := val.(type) {
+		case string:
+			s = v
+		case float64:
+			s = strconv.FormatFloat(v, 'f', -1, 64)
+		case bool:
+			s = strconv.FormatBool(v)
+		default:
+			b, err := json.Marshal(v)
+			if err != nil {
+				slog.Warn("rate limit claim value not serializable, falling back to IP",
+					"claim", claimName, "type", fmt.Sprintf("%T", val))
+				return extractIP(r, trustedProxies)
+			}
+			s = string(b)
+		}
+		return truncateKey(s)
 
 	default:
 		return extractIP(r, trustedProxies)
 	}
+}
+
+// truncateKey hashes values longer than maxKeyLen to prevent memory amplification
+// from oversized header or claim values being used as rate-limit keys.
+func truncateKey(val string) string {
+	const maxKeyLen = 256
+	if len(val) > maxKeyLen {
+		h := sha256.Sum256([]byte(val))
+		return hex.EncodeToString(h[:16])
+	}
+	return val
 }
 
 // extractIP returns the client IP address for rate-limiting purposes.

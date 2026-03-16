@@ -9,27 +9,26 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
-	"runtime"
 	"sync/atomic"
 	"syscall"
 
 	"github.com/jesus-mata/tanugate/internal/config"
-	"github.com/jesus-mata/tanugate/internal/middleware"
 	"github.com/jesus-mata/tanugate/internal/middleware/auth"
-	"github.com/jesus-mata/tanugate/internal/middleware/circuitbreaker"
 	"github.com/jesus-mata/tanugate/internal/middleware/ratelimit"
-	"github.com/jesus-mata/tanugate/internal/middleware/retry"
-	"github.com/jesus-mata/tanugate/internal/middleware/transform"
 	"github.com/jesus-mata/tanugate/internal/observability"
-	"github.com/jesus-mata/tanugate/internal/proxy"
-	"github.com/jesus-mata/tanugate/internal/router"
+	"github.com/jesus-mata/tanugate/internal/pipeline"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/collectors"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 )
 
-// handlerRef wraps an http.Handler for use with atomic.Pointer.
-type handlerRef struct{ h http.Handler }
+// handlerRef wraps an http.Handler and its cleanup function for use with
+// atomic.Pointer. The cleanup function closes idle connections on the shared
+// transport when the handler is swapped out during reload or shutdown.
+type handlerRef struct {
+	h       http.Handler
+	cleanup func()
+}
 
 func main() {
 	if len(os.Args) > 1 {
@@ -146,14 +145,14 @@ func runServe() {
 	registry.MustRegister(collectors.NewGoCollector())
 	metrics := observability.NewMetricsCollector(registry)
 
-	handler, err := buildHandler(cfg, limiter, authenticators, metrics, trustedProxies, logger)
+	handler, handlerCleanup, err := buildHandler(cfg, limiter, authenticators, metrics, trustedProxies, logger)
 	if err != nil {
 		slog.Error("failed to build handler", "error", err)
 		os.Exit(1)
 	}
 
 	var current atomic.Pointer[handlerRef]
-	current.Store(&handlerRef{h: handler})
+	current.Store(&handlerRef{h: handler, cleanup: handlerCleanup})
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /health", observability.HealthHandler(&cfgPtr, healthChecker))
@@ -163,11 +162,12 @@ func runServe() {
 	}))
 
 	srv := &http.Server{
-		Addr:         fmt.Sprintf("%s:%d", cfg.Server.Host, cfg.Server.Port),
-		Handler:      mux,
-		ReadTimeout:  cfg.Server.ReadTimeout,
-		WriteTimeout: cfg.Server.WriteTimeout,
-		IdleTimeout:  cfg.Server.IdleTimeout,
+		Addr:           fmt.Sprintf("%s:%d", cfg.Server.Host, cfg.Server.Port),
+		Handler:        mux,
+		ReadTimeout:    cfg.Server.ReadTimeout,
+		WriteTimeout:   cfg.Server.WriteTimeout,
+		IdleTimeout:    cfg.Server.IdleTimeout,
+		MaxHeaderBytes: cfg.Server.MaxHeaderBytes,
 	}
 
 	sigCh := make(chan os.Signal, 1)
@@ -209,6 +209,11 @@ loop:
 		os.Exit(1)
 	}
 
+	// Close idle connections on the shared transport.
+	if ref := current.Load(); ref.cleanup != nil {
+		ref.cleanup()
+	}
+
 	// Stop auth providers that have background goroutines.
 	for name, authn := range authenticators {
 		if stopper, ok := authn.(interface{ Stop() }); ok {
@@ -232,11 +237,8 @@ loop:
 }
 
 // buildHandler creates the full handler pipeline from the given configuration
-// and shared resources. It returns an error if handler construction fails
-// (e.g., from invalid regex patterns).
-//
-// SYNC: keep in sync with buildTestHandler in internal/integration_test.go
-// Known test differences: no Logging middleware, nil trustedProxies, no-op retry sleep.
+// and shared resources. It delegates to pipeline.BuildHandler for the actual
+// construction logic.
 func buildHandler(
 	cfg *config.GatewayConfig,
 	limiter ratelimit.Limiter,
@@ -244,63 +246,16 @@ func buildHandler(
 	metrics *observability.MetricsCollector,
 	trustedProxies []*net.IPNet,
 	logger *slog.Logger,
-) (h http.Handler, err error) {
-	defer func() {
-		if r := recover(); r != nil {
-			buf := make([]byte, 4096)
-			n := runtime.Stack(buf, false)
-			err = fmt.Errorf("panic building handler: %v\n\n%s", r, buf[:n])
-		}
-	}()
-
-	handlers := make(map[string]http.Handler, len(cfg.Routes))
-	for i := range cfg.Routes {
-		rh := proxy.NewProxyHandler(&cfg.Routes[i])
-
-		route := &cfg.Routes[i]
-		if route.CircuitBreaker != nil {
-			cb := circuitbreaker.New(route.CircuitBreaker, route.Name,
-				circuitbreaker.WithOnStateChange(func(routeName string, from, to circuitbreaker.State) {
-					slog.Info("circuit breaker state change", "route", routeName, "from", from, "to", to)
-					metrics.CircuitBreakerState.WithLabelValues(routeName, to.String()).Set(1)
-					metrics.CircuitBreakerState.WithLabelValues(routeName, from.String()).Set(0)
-				}),
-			)
-			if route.Retry != nil {
-				rh = retry.Retry(route.Retry, cb, rh)
-			} else {
-				rh = retry.WithCircuitBreaker(cb, rh)
-			}
-		} else if route.Retry != nil {
-			rh = retry.Retry(route.Retry, nil, rh)
-		}
-
-		if route.Transform != nil {
-			rh = transform.RequestTransform(route.Transform.Request, route.Transform.MaxBodySize)(
-				transform.ResponseTransform(route.Transform.Response, route.Transform.MaxBodySize)(rh))
-		}
-
-		if cfg.Routes[i].CORS != nil {
-			rh = middleware.CORSOverride(*cfg.Routes[i].CORS)(rh)
-		}
-
-		rh = auth.Middleware(logger, authenticators)(rh)
-		rh = ratelimit.RateLimit(limiter, metrics, trustedProxies)(rh)
-
-		handlers[cfg.Routes[i].Name] = rh
+) (http.Handler, func(), error) {
+	deps := &pipeline.FactoryDeps{
+		Limiter:        limiter,
+		Authenticators: authenticators,
+		Metrics:        metrics,
+		TrustedProxies: trustedProxies,
+		Logger:         logger,
 	}
-
-	r := router.New(cfg.Routes, handlers)
-
-	globalChain := middleware.Chain(
-		middleware.Recovery(),
-		middleware.RequestID(),
-		middleware.Logging(logger),
-		metrics.Middleware(),
-		middleware.CORS(cfg.CORS),
-	)
-
-	return globalChain(r), nil
+	registry := pipeline.DefaultRegistry()
+	return pipeline.BuildHandler(cfg, deps, registry)
 }
 
 // handleReload loads the configuration from disk, validates it, builds a new
@@ -331,8 +286,11 @@ func handleReload(
 		slog.Warn("non-reloadable change detected (ignored)", "detail", w)
 	}
 
-	newHandler, err := buildHandler(newCfg, limiter, authenticators, metrics, trustedProxies, logger)
+	newHandler, newCleanup, err := buildHandler(newCfg, limiter, authenticators, metrics, trustedProxies, logger)
 	if err != nil {
+		if newCleanup != nil {
+			newCleanup()
+		}
 		slog.Error("config reload failed: could not build handler, keeping current config", "error", err)
 		return
 	}
@@ -340,9 +298,14 @@ func handleReload(
 	// Log what changed (computed before stores so diff uses consistent snapshots).
 	changes := config.DiffSummary(oldCfg, newCfg)
 
-	// Store config first, then handler, so health checks never see stale config.
+	// Swap config and handler atomically. Close idle connections on the old
+	// transport after the swap so in-flight requests can finish.
+	old := current.Load()
 	cfgPtr.Store(newCfg)
-	current.Store(&handlerRef{h: newHandler})
+	current.Store(&handlerRef{h: newHandler, cleanup: newCleanup})
+	if old.cleanup != nil {
+		old.cleanup()
+	}
 
 	if len(changes) == 0 {
 		slog.Info("Configuration reloaded (no reloadable changes detected)")

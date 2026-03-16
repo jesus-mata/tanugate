@@ -10,7 +10,6 @@ import (
 
 	"github.com/jesus-mata/tanugate/internal/config"
 	"github.com/jesus-mata/tanugate/internal/middleware"
-	"github.com/jesus-mata/tanugate/internal/router"
 )
 
 // Authenticator validates an incoming request and returns an AuthResult on
@@ -66,20 +65,19 @@ func NewAuthenticator(provider config.AuthProvider) (Authenticator, error) {
 	}
 }
 
-// Middleware returns a middleware.Middleware that authenticates requests using
-// the provided authenticator map. The map keys correspond to the provider
-// names defined in the gateway configuration. A provider name of "none"
-// bypasses authentication entirely.
-func Middleware(logger *slog.Logger, authenticators map[string]Authenticator) middleware.Middleware {
+// NewAuthMiddleware creates an auth middleware with providers bound at
+// construction time. The providers list is closed over instead of being read
+// from route context, enabling multiple auth middleware instances per route.
+// A provider name of "none" bypasses authentication entirely.
+func NewAuthMiddleware(logger *slog.Logger, authenticators map[string]Authenticator, providers []string) middleware.Middleware {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			mr := router.RouteFromContext(r.Context())
-			if mr == nil || mr.Config.Auth == nil || len(mr.Config.Auth.Providers) == 0 {
-				next.ServeHTTP(w, r)
+			if len(providers) == 0 {
+				logger.Error("auth middleware has no providers configured, rejecting request")
+				writeError(w, http.StatusInternalServerError, "misconfigured auth middleware")
 				return
 			}
 
-			providers := mr.Config.Auth.Providers
 			// Invariant: config.Validate rejects "none" combined with other
 			// providers, so this check is sufficient.
 			if len(providers) == 1 && providers[0] == "none" {
@@ -91,7 +89,7 @@ func Middleware(logger *slog.Logger, authenticators map[string]Authenticator) mi
 			for _, name := range providers {
 				authn, ok := authenticators[name]
 				if !ok {
-					logger.Error("auth provider not found", "provider", name, "route", mr.Config.Name)
+					logger.Error("auth provider not found", "provider", name)
 					writeError(w, http.StatusInternalServerError, "misconfigured auth provider")
 					return
 				}
@@ -109,7 +107,6 @@ func Middleware(logger *slog.Logger, authenticators map[string]Authenticator) mi
 			}
 
 			logger.Warn("all auth providers failed",
-				"route", mr.Config.Name,
 				"providers", strings.Join(providers, ","),
 				"errors", strings.Join(authErrors, "; "),
 			)

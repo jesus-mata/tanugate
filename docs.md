@@ -15,9 +15,14 @@ In both cases, upstream URLs in tanugate's configuration should use **service na
 ```yaml
 routes:
   - name: users
-    path: /api/users/{path:*}
+    match:
+      path_regex: "^/api/users(?P<path>/.*)?$"
+      host: "api.example.com"          # optional: exact or wildcard (*.example.com)
+      headers:                          # optional: all must match (AND semantics)
+        X-API-Version: "v[0-9]+"       # regex pattern (auto-anchored)
     upstream:
       url: http://users-service:8080
+      path_rewrite: "{path}"
 ```
 
 Scaling upstream services (e.g., `docker service scale users-service=10` or `kubectl scale deployment users-service --replicas=10`) is transparent to tanugate — no configuration changes required.

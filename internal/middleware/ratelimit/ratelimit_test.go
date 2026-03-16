@@ -7,6 +7,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -520,12 +521,64 @@ func TestExtractKey_Claim_NonStringValue(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
 	req.RemoteAddr = "1.2.3.4:1234"
 	ctx := auth.WithAuthResult(req.Context(), &auth.AuthResult{
-		Claims: map[string]any{"org_id": 42},
+		Claims: map[string]any{"org_id": float64(42)},
 	})
 	req = req.WithContext(ctx)
 
 	key := extractKey(req, "claim:org_id", nil)
 	if key != "42" {
 		t.Fatalf("expected 42, got %s", key)
+	}
+}
+
+func TestExtractKey_Claim_BoolValue(t *testing.T) {
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.RemoteAddr = "1.2.3.4:1234"
+	ctx := auth.WithAuthResult(req.Context(), &auth.AuthResult{
+		Claims: map[string]any{"is_admin": true},
+	})
+	req = req.WithContext(ctx)
+
+	key := extractKey(req, "claim:is_admin", nil)
+	if key != "true" {
+		t.Fatalf("expected true, got %s", key)
+	}
+}
+
+func TestExtractKey_Claim_ComplexValue(t *testing.T) {
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.RemoteAddr = "1.2.3.4:1234"
+	ctx := auth.WithAuthResult(req.Context(), &auth.AuthResult{
+		Claims: map[string]any{"roles": []any{"a", "b"}},
+	})
+	req = req.WithContext(ctx)
+
+	key := extractKey(req, "claim:roles", nil)
+	if key != `["a","b"]` {
+		t.Fatalf("expected [\"a\",\"b\"], got %s", key)
+	}
+}
+
+func TestExtractKey_Header_LongValue(t *testing.T) {
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.RemoteAddr = "1.2.3.4:1234"
+	longVal := strings.Repeat("x", 1000)
+	req.Header.Set("X-Tenant-ID", longVal)
+
+	key := extractKey(req, "header:X-Tenant-ID", nil)
+	if len(key) != 32 {
+		t.Fatalf("expected 32-char hex hash for long header, got %d chars: %s", len(key), key)
+	}
+}
+
+func TestExtractKey_Header_ShortValue(t *testing.T) {
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.RemoteAddr = "1.2.3.4:1234"
+	shortVal := strings.Repeat("x", 100)
+	req.Header.Set("X-Tenant-ID", shortVal)
+
+	key := extractKey(req, "header:X-Tenant-ID", nil)
+	if key != shortVal {
+		t.Fatalf("expected short header value to be returned as-is, got %s", key)
 	}
 }

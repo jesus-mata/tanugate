@@ -4,13 +4,12 @@ import (
 	"fmt"
 	"log/slog"
 	"net"
-	"net/http"
 
 	"github.com/jesus-mata/tanugate/internal/config"
 	"github.com/jesus-mata/tanugate/internal/middleware"
 	"github.com/jesus-mata/tanugate/internal/middleware/auth"
 	"github.com/jesus-mata/tanugate/internal/middleware/ratelimit"
-	"github.com/jesus-mata/tanugate/internal/middleware/transform"
+
 	"github.com/jesus-mata/tanugate/internal/observability"
 )
 
@@ -56,7 +55,7 @@ func DefaultRegistry() *Registry {
 	r.Register("cors", corsFactory)
 	r.Register("rate_limit", rateLimitFactory)
 	r.Register("auth", authFactory)
-	r.Register("transform", transformFactory)
+
 	return r
 }
 
@@ -87,15 +86,3 @@ func authFactory(deps *FactoryDeps, _, _ string, cfg any) (middleware.Middleware
 	return auth.NewAuthMiddleware(deps.Logger, deps.Authenticators, authCfg.Providers), nil
 }
 
-func transformFactory(_ *FactoryDeps, _, _ string, cfg any) (middleware.Middleware, error) {
-	tCfg, ok := cfg.(*config.TransformConfig)
-	if !ok {
-		return nil, fmt.Errorf("transform factory: expected *config.TransformConfig, got %T", cfg)
-	}
-	return func(next http.Handler) http.Handler {
-		h := next
-		h = transform.ResponseTransform(tCfg.Response, tCfg.MaxBodySize)(h)
-		h = transform.RequestTransform(tCfg.Request, tCfg.MaxBodySize)(h)
-		return h
-	}, nil
-}

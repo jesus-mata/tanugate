@@ -78,6 +78,8 @@ func BuildHandler(
 		allMiddlewares = append(allMiddlewares, routeResolved...)
 
 		// f. Extract transform entries and apply them around the proxy+resilience handler.
+		//    Transforms bypass the registry — they must wrap the proxy+resilience handler
+		//    directly (innermost) to modify upstream request/response bodies.
 		var transforms []config.ResolvedMiddleware
 		var chainMiddlewares []config.ResolvedMiddleware
 		for _, mw := range allMiddlewares {

@@ -52,7 +52,7 @@ func TestRegistry_RegisterAndBuild(t *testing.T) {
 
 func TestDefaultRegistry_HasAllTypes(t *testing.T) {
 	r := DefaultRegistry()
-	for _, typ := range []string{"cors", "rate_limit", "auth", "transform"} {
+	for _, typ := range []string{"cors", "rate_limit", "auth"} {
 		if _, ok := r.factories[typ]; !ok {
 			t.Errorf("DefaultRegistry missing factory for type %q", typ)
 		}

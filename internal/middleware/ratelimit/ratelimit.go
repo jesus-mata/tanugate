@@ -2,11 +2,14 @@ package ratelimit
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"log/slog"
 	"net"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -139,7 +142,7 @@ func extractKey(r *http.Request, keySource string, trustedProxies []*net.IPNet) 
 			)
 			return extractIP(r, trustedProxies)
 		}
-		return val
+		return truncateKey(val)
 
 	case strings.HasPrefix(keySource, "claim:"):
 		claimName := strings.TrimPrefix(keySource, "claim:")
@@ -153,11 +156,39 @@ func extractKey(r *http.Request, keySource string, trustedProxies []*net.IPNet) 
 			slog.Warn("rate limit claim key not found, falling back to IP", "claim", claimName)
 			return extractIP(r, trustedProxies)
 		}
-		return fmt.Sprintf("%v", val)
+		var s string
+		switch v := val.(type) {
+		case string:
+			s = v
+		case float64:
+			s = strconv.FormatFloat(v, 'f', -1, 64)
+		case bool:
+			s = strconv.FormatBool(v)
+		default:
+			b, err := json.Marshal(v)
+			if err != nil {
+				slog.Warn("rate limit claim value not serializable, falling back to IP",
+					"claim", claimName, "type", fmt.Sprintf("%T", val))
+				return extractIP(r, trustedProxies)
+			}
+			s = string(b)
+		}
+		return truncateKey(s)
 
 	default:
 		return extractIP(r, trustedProxies)
 	}
+}
+
+// truncateKey hashes values longer than maxKeyLen to prevent memory amplification
+// from oversized header or claim values being used as rate-limit keys.
+func truncateKey(val string) string {
+	const maxKeyLen = 256
+	if len(val) > maxKeyLen {
+		h := sha256.Sum256([]byte(val))
+		return hex.EncodeToString(h[:16])
+	}
+	return val
 }
 
 // extractIP returns the client IP address for rate-limiting purposes.

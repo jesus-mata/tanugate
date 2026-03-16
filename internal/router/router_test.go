@@ -687,6 +687,396 @@ func TestRouter_HeaderFirstMatchWins(t *testing.T) {
 	}
 }
 
+func TestRouter_ExactHostMatch(t *testing.T) {
+	configs := []config.RouteConfig{
+		{
+			Name: "host-route",
+			Match: config.MatchConfig{
+				PathRegex: `^/api/data$`,
+				Host:      "api.example.com",
+			},
+		},
+	}
+
+	called := false
+	handlers := map[string]http.Handler{
+		"host-route": http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			called = true
+			w.WriteHeader(http.StatusOK)
+		}),
+	}
+
+	router := New(configs, handlers)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/data", nil)
+	req.Host = "api.example.com"
+	rr := httptest.NewRecorder()
+	router.ServeHTTP(rr, req)
+
+	if !called {
+		t.Fatal("expected handler to be called for exact host match")
+	}
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", rr.Code)
+	}
+}
+
+func TestRouter_ExactHostMismatch(t *testing.T) {
+	configs := []config.RouteConfig{
+		{
+			Name: "host-route",
+			Match: config.MatchConfig{
+				PathRegex: `^/api/data$`,
+				Host:      "api.example.com",
+			},
+		},
+	}
+
+	handlers := map[string]http.Handler{
+		"host-route": http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(http.StatusOK)
+		}),
+	}
+
+	router := New(configs, handlers)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/data", nil)
+	req.Host = "other.example.com"
+	rr := httptest.NewRecorder()
+	router.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusNotFound {
+		t.Fatalf("expected 404 for host mismatch, got %d", rr.Code)
+	}
+}
+
+func TestRouter_HostPortStripping(t *testing.T) {
+	configs := []config.RouteConfig{
+		{
+			Name: "host-route",
+			Match: config.MatchConfig{
+				PathRegex: `^/api/data$`,
+				Host:      "api.example.com",
+			},
+		},
+	}
+
+	called := false
+	handlers := map[string]http.Handler{
+		"host-route": http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			called = true
+			w.WriteHeader(http.StatusOK)
+		}),
+	}
+
+	router := New(configs, handlers)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/data", nil)
+	req.Host = "api.example.com:8080"
+	rr := httptest.NewRecorder()
+	router.ServeHTTP(rr, req)
+
+	if !called {
+		t.Fatal("expected handler to be called after port stripping")
+	}
+}
+
+func TestRouter_HostCaseInsensitive(t *testing.T) {
+	configs := []config.RouteConfig{
+		{
+			Name: "host-route",
+			Match: config.MatchConfig{
+				PathRegex: `^/api/data$`,
+				Host:      "API.Example.COM",
+			},
+		},
+	}
+
+	called := false
+	handlers := map[string]http.Handler{
+		"host-route": http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			called = true
+			w.WriteHeader(http.StatusOK)
+		}),
+	}
+
+	router := New(configs, handlers)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/data", nil)
+	req.Host = "api.example.com"
+	rr := httptest.NewRecorder()
+	router.ServeHTTP(rr, req)
+
+	if !called {
+		t.Fatal("expected handler to be called — host matching should be case-insensitive")
+	}
+}
+
+func TestRouter_NoHostConstraintMatchesAny(t *testing.T) {
+	configs := []config.RouteConfig{
+		{
+			Name: "no-host-route",
+			Match: config.MatchConfig{
+				PathRegex: `^/api/data$`,
+			},
+		},
+	}
+
+	called := false
+	handlers := map[string]http.Handler{
+		"no-host-route": http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			called = true
+			w.WriteHeader(http.StatusOK)
+		}),
+	}
+
+	router := New(configs, handlers)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/data", nil)
+	req.Host = "anything.example.com"
+	rr := httptest.NewRecorder()
+	router.ServeHTTP(rr, req)
+
+	if !called {
+		t.Fatal("expected handler to be called when route has no host constraint")
+	}
+}
+
+func TestRouter_WildcardHostMatch(t *testing.T) {
+	configs := []config.RouteConfig{
+		{
+			Name: "wildcard-route",
+			Match: config.MatchConfig{
+				PathRegex: `^/api/data$`,
+				Host:      "*.example.com",
+			},
+		},
+	}
+
+	called := false
+	handlers := map[string]http.Handler{
+		"wildcard-route": http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			called = true
+			w.WriteHeader(http.StatusOK)
+		}),
+	}
+
+	router := New(configs, handlers)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/data", nil)
+	req.Host = "api.example.com"
+	rr := httptest.NewRecorder()
+	router.ServeHTTP(rr, req)
+
+	if !called {
+		t.Fatal("expected handler to be called for wildcard host match")
+	}
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", rr.Code)
+	}
+}
+
+func TestRouter_WildcardHostMatch_DifferentSubdomain(t *testing.T) {
+	configs := []config.RouteConfig{
+		{
+			Name: "wildcard-route",
+			Match: config.MatchConfig{
+				PathRegex: `^/api/data$`,
+				Host:      "*.example.com",
+			},
+		},
+	}
+
+	called := false
+	handlers := map[string]http.Handler{
+		"wildcard-route": http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			called = true
+			w.WriteHeader(http.StatusOK)
+		}),
+	}
+
+	router := New(configs, handlers)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/data", nil)
+	req.Host = "app.example.com"
+	rr := httptest.NewRecorder()
+	router.ServeHTTP(rr, req)
+
+	if !called {
+		t.Fatal("expected handler to be called for wildcard host match with different subdomain")
+	}
+}
+
+func TestRouter_WildcardHostRejectBareDomain(t *testing.T) {
+	configs := []config.RouteConfig{
+		{
+			Name: "wildcard-route",
+			Match: config.MatchConfig{
+				PathRegex: `^/api/data$`,
+				Host:      "*.example.com",
+			},
+		},
+	}
+
+	handlers := map[string]http.Handler{
+		"wildcard-route": http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(http.StatusOK)
+		}),
+	}
+
+	router := New(configs, handlers)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/data", nil)
+	req.Host = "example.com"
+	rr := httptest.NewRecorder()
+	router.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusNotFound {
+		t.Fatalf("expected 404 for bare domain against wildcard, got %d", rr.Code)
+	}
+}
+
+func TestRouter_WildcardHostRejectMultiLevel(t *testing.T) {
+	configs := []config.RouteConfig{
+		{
+			Name: "wildcard-route",
+			Match: config.MatchConfig{
+				PathRegex: `^/api/data$`,
+				Host:      "*.example.com",
+			},
+		},
+	}
+
+	handlers := map[string]http.Handler{
+		"wildcard-route": http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(http.StatusOK)
+		}),
+	}
+
+	router := New(configs, handlers)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/data", nil)
+	req.Host = "a.b.example.com"
+	rr := httptest.NewRecorder()
+	router.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusNotFound {
+		t.Fatalf("expected 404 for multi-level subdomain against wildcard, got %d", rr.Code)
+	}
+}
+
+func TestRouter_WildcardHostCaseInsensitive(t *testing.T) {
+	configs := []config.RouteConfig{
+		{
+			Name: "wildcard-route",
+			Match: config.MatchConfig{
+				PathRegex: `^/api/data$`,
+				Host:      "*.Example.COM",
+			},
+		},
+	}
+
+	called := false
+	handlers := map[string]http.Handler{
+		"wildcard-route": http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			called = true
+			w.WriteHeader(http.StatusOK)
+		}),
+	}
+
+	router := New(configs, handlers)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/data", nil)
+	req.Host = "API.example.com"
+	rr := httptest.NewRecorder()
+	router.ServeHTTP(rr, req)
+
+	if !called {
+		t.Fatal("expected handler to be called — wildcard host matching should be case-insensitive")
+	}
+}
+
+func TestRouter_WildcardHostPortStripping(t *testing.T) {
+	configs := []config.RouteConfig{
+		{
+			Name: "wildcard-route",
+			Match: config.MatchConfig{
+				PathRegex: `^/api/data$`,
+				Host:      "*.example.com",
+			},
+		},
+	}
+
+	called := false
+	handlers := map[string]http.Handler{
+		"wildcard-route": http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			called = true
+			w.WriteHeader(http.StatusOK)
+		}),
+	}
+
+	router := New(configs, handlers)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/data", nil)
+	req.Host = "api.example.com:443"
+	rr := httptest.NewRecorder()
+	router.ServeHTTP(rr, req)
+
+	if !called {
+		t.Fatal("expected handler to be called after port stripping with wildcard")
+	}
+}
+
+func TestRouter_HostFirstMatchWins(t *testing.T) {
+	configs := []config.RouteConfig{
+		{
+			Name: "exact-host",
+			Match: config.MatchConfig{
+				PathRegex: `^/api/data$`,
+				Host:      "api.example.com",
+			},
+		},
+		{
+			Name: "wildcard-host",
+			Match: config.MatchConfig{
+				PathRegex: `^/api/data$`,
+				Host:      "*.example.com",
+			},
+		},
+	}
+
+	handlers := map[string]http.Handler{
+		"exact-host": http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(http.StatusOK)
+		}),
+		"wildcard-host": http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(http.StatusAccepted)
+		}),
+	}
+
+	router := New(configs, handlers)
+
+	// api.example.com → should hit the exact-host route (first match).
+	req := httptest.NewRequest(http.MethodGet, "/api/data", nil)
+	req.Host = "api.example.com"
+	rr := httptest.NewRecorder()
+	router.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected 200 from exact-host route, got %d", rr.Code)
+	}
+
+	// app.example.com → should fall through to wildcard-host route.
+	req2 := httptest.NewRequest(http.MethodGet, "/api/data", nil)
+	req2.Host = "app.example.com"
+	rr2 := httptest.NewRecorder()
+	router.ServeHTTP(rr2, req2)
+
+	if rr2.Code != http.StatusAccepted {
+		t.Fatalf("expected 202 from wildcard-host route, got %d", rr2.Code)
+	}
+}
+
 func TestRouteFromContext_NilWhenMissing(t *testing.T) {
 	mr := RouteFromContext(context.Background())
 	if mr != nil {

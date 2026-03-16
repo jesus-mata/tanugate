@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"regexp"
+	"strings"
 
 	"github.com/jesus-mata/tanugate/internal/config"
 )
@@ -52,12 +53,21 @@ type headerMatcher struct {
 	presenceOnly bool           // true when the original pattern was "*"
 }
 
+// hostMatcher holds a compiled host matching rule. Either exact (case-insensitive
+// string comparison) or wildcard (*.suffix checks that the host ends with the
+// suffix and has exactly one additional label).
+type hostMatcher struct {
+	exact          string // non-empty for exact match (lowercased)
+	wildcardSuffix string // non-empty for wildcard match: the part after "*" (e.g. ".example.com"), lowercased
+}
+
 // compiledRoute is the internal representation of a route after its regex has
 // been compiled and its allowed methods have been indexed for fast lookup.
 type compiledRoute struct {
 	name    string
 	regex   *regexp.Regexp
 	methods map[string]bool // nil means all methods are allowed
+	host    *hostMatcher    // nil means match any host
 	headers []headerMatcher // nil means no header constraints
 	handler http.Handler
 	config  *config.RouteConfig
@@ -87,6 +97,16 @@ func New(configs []config.RouteConfig, handlers map[string]http.Handler) *Router
 			}
 		}
 
+		var hm *hostMatcher
+		if cfg.Match.Host != "" {
+			h := strings.ToLower(cfg.Match.Host)
+			if strings.HasPrefix(h, "*.") {
+				hm = &hostMatcher{wildcardSuffix: h[1:]} // e.g. ".example.com"
+			} else {
+				hm = &hostMatcher{exact: h}
+			}
+		}
+
 		var hdrs []headerMatcher
 		for hdrName, pattern := range cfg.Match.Headers {
 			if pattern == "*" {
@@ -109,6 +129,7 @@ func New(configs []config.RouteConfig, handlers map[string]http.Handler) *Router
 			name:    cfg.Name,
 			regex:   re,
 			methods: methods,
+			host:    hm,
 			headers: hdrs,
 			handler: h,
 			config:  cfg,
@@ -128,6 +149,31 @@ func (rt *Router) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		matches := cr.regex.FindStringSubmatch(r.URL.Path)
 		if matches == nil {
 			continue
+		}
+
+		// Check host constraint.
+		if cr.host != nil {
+			reqHost := r.Host
+			if idx := strings.LastIndex(reqHost, ":"); idx != -1 {
+				reqHost = reqHost[:idx]
+			}
+			reqHost = strings.ToLower(reqHost)
+
+			if cr.host.exact != "" {
+				if reqHost != cr.host.exact {
+					continue
+				}
+			} else {
+				// Wildcard: host must end with suffix and have exactly one label before it.
+				if !strings.HasSuffix(reqHost, cr.host.wildcardSuffix) {
+					continue
+				}
+				// The part before the suffix must be a single label (no dots).
+				prefix := reqHost[:len(reqHost)-len(cr.host.wildcardSuffix)]
+				if prefix == "" || strings.Contains(prefix, ".") {
+					continue
+				}
+			}
 		}
 
 		if cr.methods != nil && !cr.methods[r.Method] {

@@ -42,6 +42,7 @@ func GenerateSchema() *invopop.Schema {
 		// Map time.Duration to a string schema with a pattern and examples,
 		// because Duration is int64 internally but users write "30s" in YAML.
 		durationType := reflect.TypeOf(time.Duration(0))
+		yamlNodeType := reflect.TypeOf(yaml.Node{})
 		r.Mapper = func(t reflect.Type) *invopop.Schema {
 			if t == durationType {
 				return &invopop.Schema{
@@ -49,6 +50,11 @@ func GenerateSchema() *invopop.Schema {
 					Pattern:     `^([0-9]+(ns|us|µs|ms|s|m|h))+$`,
 					Description: "Go duration string (e.g. 30s, 1m, 2h30m)",
 					Examples:    []any{"30s", "1m", "500ms", "2h30m"},
+				}
+			}
+			if t == yamlNodeType {
+				return &invopop.Schema{
+					Description: "Type-specific middleware configuration",
 				}
 			}
 			return nil

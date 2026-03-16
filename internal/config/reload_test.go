@@ -6,6 +6,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"gopkg.in/yaml.v3"
 )
 
 func TestValidate_InvalidPathRegex(t *testing.T) {
@@ -215,6 +217,26 @@ func TestNonReloadableChanges_TrustedProxiesChange(t *testing.T) {
 	}
 }
 
+func TestNonReloadableChanges_MaxHeaderBytesChange(t *testing.T) {
+	old := &GatewayConfig{
+		Server: ServerConfig{MaxHeaderBytes: 1 << 20},
+	}
+	new := &GatewayConfig{
+		Server: ServerConfig{MaxHeaderBytes: 8192},
+	}
+
+	warnings := NonReloadableChanges(old, new)
+	found := false
+	for _, w := range warnings {
+		if strings.Contains(w, "max_header_bytes") {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("expected warning for max_header_bytes change, got %v", warnings)
+	}
+}
+
 func TestNonReloadableChanges_NoChanges(t *testing.T) {
 	cfg := &GatewayConfig{
 		Server:    ServerConfig{Host: "0.0.0.0", Port: 8080},
@@ -283,29 +305,41 @@ func TestDiffSummary_RouteModified(t *testing.T) {
 	}
 }
 
-func TestDiffSummary_CORSChanged(t *testing.T) {
+func TestDiffSummary_CORSMiddlewareDefinitionChanged(t *testing.T) {
+	buildNode := func(yamlStr string) yaml.Node {
+		var node yaml.Node
+		_ = yaml.Unmarshal([]byte(yamlStr), &node)
+		if node.Kind == yaml.DocumentNode && len(node.Content) > 0 {
+			return *node.Content[0]
+		}
+		return node
+	}
+
 	old := &GatewayConfig{
-		CORS: CORSConfig{AllowedOrigins: []string{"https://old.example.com"}},
+		MiddlewareDefinitions: map[string]MiddlewareDefinition{
+			"global-cors": {Type: "cors", Config: buildNode("allowed_origins:\n  - https://old.example.com")},
+		},
 	}
 	new := &GatewayConfig{
-		CORS: CORSConfig{AllowedOrigins: []string{"https://new.example.com"}},
+		MiddlewareDefinitions: map[string]MiddlewareDefinition{
+			"global-cors": {Type: "cors", Config: buildNode("allowed_origins:\n  - https://new.example.com")},
+		},
 	}
 
 	changes := DiffSummary(old, new)
 	found := false
 	for _, c := range changes {
-		if strings.Contains(c, "CORS") {
+		if strings.Contains(c, "middleware_definitions") && strings.Contains(c, "modified") {
 			found = true
 		}
 	}
 	if !found {
-		t.Errorf("expected CORS change in diff, got %v", changes)
+		t.Errorf("expected middleware_definitions modified change in diff, got %v", changes)
 	}
 }
 
 func TestDiffSummary_NoChanges(t *testing.T) {
 	cfg := &GatewayConfig{
-		CORS: CORSConfig{AllowedOrigins: []string{"https://example.com"}},
 		Routes: []RouteConfig{
 			{Name: "api", Match: MatchConfig{PathRegex: "^/api"}, Upstream: UpstreamConfig{URL: "http://svc:8080"}},
 		},
@@ -317,48 +351,16 @@ func TestDiffSummary_NoChanges(t *testing.T) {
 	}
 }
 
-func TestDiffSummary_RateLimitModified(t *testing.T) {
-	old := &GatewayConfig{
-		Routes: []RouteConfig{
-			{
-				Name:      "api",
-				Match:     MatchConfig{PathRegex: "^/api"},
-				Upstream:  UpstreamConfig{URL: "http://svc:8080"},
-				RateLimit: &RouteLimitConfig{RequestsPerWindow: 100, Window: time.Minute},
-			},
-		},
-	}
-	new := &GatewayConfig{
-		Routes: []RouteConfig{
-			{
-				Name:      "api",
-				Match:     MatchConfig{PathRegex: "^/api"},
-				Upstream:  UpstreamConfig{URL: "http://svc:8080"},
-				RateLimit: &RouteLimitConfig{RequestsPerWindow: 200, Window: time.Minute},
-			},
-		},
-	}
-
-	changes := DiffSummary(old, new)
-	if len(changes) != 1 {
-		t.Fatalf("expected 1 change, got %d: %v", len(changes), changes)
-	}
-	if !strings.Contains(changes[0], "modified") {
-		t.Errorf("expected 'modified' in change, got %q", changes[0])
-	}
-}
-
-func TestDiffSummary_TransformModified(t *testing.T) {
+func TestDiffSummary_MiddlewareRefsModified(t *testing.T) {
+	// Test route modification detection via middleware ref changes.
 	old := &GatewayConfig{
 		Routes: []RouteConfig{
 			{
 				Name:     "api",
 				Match:    MatchConfig{PathRegex: "^/api"},
 				Upstream: UpstreamConfig{URL: "http://svc:8080"},
-				Transform: &TransformConfig{
-					Request: &DirectionTransform{
-						Headers: &HeaderTransform{Add: map[string]string{"X-Old": "true"}},
-					},
+				Middlewares: []MiddlewareRef{
+					{Ref: "rl"},
 				},
 			},
 		},
@@ -369,10 +371,9 @@ func TestDiffSummary_TransformModified(t *testing.T) {
 				Name:     "api",
 				Match:    MatchConfig{PathRegex: "^/api"},
 				Upstream: UpstreamConfig{URL: "http://svc:8080"},
-				Transform: &TransformConfig{
-					Request: &DirectionTransform{
-						Headers: &HeaderTransform{Add: map[string]string{"X-New": "true"}},
-					},
+				Middlewares: []MiddlewareRef{
+					{Ref: "rl"},
+					{Ref: "auth"},
 				},
 			},
 		},
@@ -387,23 +388,23 @@ func TestDiffSummary_TransformModified(t *testing.T) {
 	}
 }
 
-func TestDiffSummary_TransformAddedToRoute(t *testing.T) {
+func TestDiffSummary_SkipMiddlewaresModified(t *testing.T) {
 	old := &GatewayConfig{
-		Routes: []RouteConfig{
-			{Name: "api", Match: MatchConfig{PathRegex: "^/api"}, Upstream: UpstreamConfig{URL: "http://svc:8080"}},
-		},
-	}
-	new := &GatewayConfig{
 		Routes: []RouteConfig{
 			{
 				Name:     "api",
 				Match:    MatchConfig{PathRegex: "^/api"},
 				Upstream: UpstreamConfig{URL: "http://svc:8080"},
-				Transform: &TransformConfig{
-					Request: &DirectionTransform{
-						Headers: &HeaderTransform{Add: map[string]string{"X-Added": "true"}},
-					},
-				},
+			},
+		},
+	}
+	new := &GatewayConfig{
+		Routes: []RouteConfig{
+			{
+				Name:            "api",
+				Match:           MatchConfig{PathRegex: "^/api"},
+				Upstream:        UpstreamConfig{URL: "http://svc:8080"},
+				SkipMiddlewares: []string{"rl"},
 			},
 		},
 	}
@@ -414,6 +415,73 @@ func TestDiffSummary_TransformAddedToRoute(t *testing.T) {
 	}
 	if !strings.Contains(changes[0], "modified") {
 		t.Errorf("expected 'modified' in change, got %q", changes[0])
+	}
+}
+
+func TestDiffSummary_MiddlewareDefinitionsChanged(t *testing.T) {
+	// Helper to build a yaml.Node for a config map
+	buildNode := func(yamlStr string) yaml.Node {
+		var node yaml.Node
+		_ = yaml.Unmarshal([]byte(yamlStr), &node)
+		if node.Kind == yaml.DocumentNode && len(node.Content) > 0 {
+			return *node.Content[0]
+		}
+		return node
+	}
+
+	old := &GatewayConfig{
+		MiddlewareDefinitions: map[string]MiddlewareDefinition{
+			"rl": {Type: "rate_limit", Config: buildNode("requests: 100\nwindow: 60s")},
+		},
+	}
+	new := &GatewayConfig{
+		MiddlewareDefinitions: map[string]MiddlewareDefinition{
+			"rl":   {Type: "rate_limit", Config: buildNode("requests: 200\nwindow: 60s")},
+			"auth": {Type: "auth", Config: buildNode("providers: [none]")},
+		},
+	}
+
+	changes := DiffSummary(old, new)
+	foundModified := false
+	foundAdded := false
+	for _, c := range changes {
+		if strings.Contains(c, "middleware_definitions") && strings.Contains(c, "modified") {
+			foundModified = true
+		}
+		if strings.Contains(c, "middleware_definitions") && strings.Contains(c, "added") {
+			foundAdded = true
+		}
+	}
+	if !foundModified {
+		t.Errorf("expected middleware_definitions modified change, got %v", changes)
+	}
+	if !foundAdded {
+		t.Errorf("expected middleware_definitions added change, got %v", changes)
+	}
+}
+
+func TestDiffSummary_GlobalMiddlewaresChanged(t *testing.T) {
+	old := &GatewayConfig{
+		Middlewares: []MiddlewareRef{
+			{Ref: "rl"},
+		},
+	}
+	new := &GatewayConfig{
+		Middlewares: []MiddlewareRef{
+			{Ref: "rl"},
+			{Ref: "auth"},
+		},
+	}
+
+	changes := DiffSummary(old, new)
+	found := false
+	for _, c := range changes {
+		if strings.Contains(c, "global middlewares") {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("expected global middlewares change, got %v", changes)
 	}
 }
 
@@ -440,6 +508,122 @@ func TestDiffSummary_RouteOrderChanged(t *testing.T) {
 	}
 	if !found {
 		t.Errorf("expected route order change in diff, got %v", changes)
+	}
+}
+
+func TestDiffSummary_NestedMiddlewareConfigChanged(t *testing.T) {
+	// buildNode unmarshals a YAML string into a yaml.Node (same pattern as existing tests).
+	buildNode := func(yamlStr string) yaml.Node {
+		var node yaml.Node
+		_ = yaml.Unmarshal([]byte(yamlStr), &node)
+		if node.Kind == yaml.DocumentNode && len(node.Content) > 0 {
+			return *node.Content[0]
+		}
+		return node
+	}
+
+	old := &GatewayConfig{
+		MiddlewareDefinitions: map[string]MiddlewareDefinition{
+			"transform": {
+				Type: "transform",
+				Config: buildNode(`
+request:
+  headers:
+    add:
+      X-Foo: bar
+`),
+			},
+		},
+	}
+	new := &GatewayConfig{
+		MiddlewareDefinitions: map[string]MiddlewareDefinition{
+			"transform": {
+				Type: "transform",
+				Config: buildNode(`
+request:
+  headers:
+    add:
+      X-Foo: baz
+`),
+			},
+		},
+	}
+
+	changes := DiffSummary(old, new)
+	found := false
+	for _, c := range changes {
+		if strings.Contains(c, "middleware_definitions") && strings.Contains(c, "modified") {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("expected nested middleware definition change to be detected, got %v", changes)
+	}
+}
+
+func TestDiffSummary_NestedMiddlewareRefOverrideChanged(t *testing.T) {
+	buildNode := func(yamlStr string) yaml.Node {
+		var node yaml.Node
+		_ = yaml.Unmarshal([]byte(yamlStr), &node)
+		if node.Kind == yaml.DocumentNode && len(node.Content) > 0 {
+			return *node.Content[0]
+		}
+		return node
+	}
+
+	old := &GatewayConfig{
+		Routes: []RouteConfig{
+			{
+				Name:     "api",
+				Match:    MatchConfig{PathRegex: "^/api"},
+				Upstream: UpstreamConfig{URL: "http://svc:8080"},
+				Middlewares: []MiddlewareRef{
+					{
+						Ref: "transform",
+						Config: buildNode(`
+request:
+  headers:
+    add:
+      X-Request-ID: old-value
+`),
+					},
+				},
+			},
+		},
+	}
+	new := &GatewayConfig{
+		Routes: []RouteConfig{
+			{
+				Name:     "api",
+				Match:    MatchConfig{PathRegex: "^/api"},
+				Upstream: UpstreamConfig{URL: "http://svc:8080"},
+				Middlewares: []MiddlewareRef{
+					{
+						Ref: "transform",
+						Config: buildNode(`
+request:
+  headers:
+    add:
+      X-Request-ID: new-value
+`),
+					},
+				},
+			},
+		},
+	}
+
+	changes := DiffSummary(old, new)
+	if len(changes) == 0 {
+		t.Fatal("expected route modification due to nested middleware ref override change, got no changes")
+	}
+	found := false
+	for _, c := range changes {
+		if strings.Contains(c, "modified") {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("expected 'modified' in change, got %v", changes)
 	}
 }
 

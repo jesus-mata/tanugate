@@ -15,7 +15,7 @@ func TestGenerateSchema_TopLevelProperties(t *testing.T) {
 		t.Fatal("schema.Properties is nil, expected top-level properties")
 	}
 
-	expected := []string{"server", "logging", "cors", "rate_limit", "auth_providers", "routes"}
+	expected := []string{"server", "logging", "rate_limit", "auth_providers", "middleware_definitions", "middlewares", "routes"}
 	for _, name := range expected {
 		_, ok := schema.Properties.Get(name)
 		if !ok {
@@ -65,51 +65,42 @@ func TestGenerateSchema_DurationFields(t *testing.T) {
 func TestGenerateSchema_EnumValues(t *testing.T) {
 	schema := GenerateSchema()
 
-	// Find the RouteLimitConfig definition to check algorithm enum.
-	// Navigate through routes -> items -> rate_limit -> algorithm.
-	routesSchema, ok := schema.Properties.Get("routes")
+	// Find the RateLimitConfig definition (middleware-level) to check algorithm enum.
+	// It should be in $defs since it's used via MiddlewareDefinition config.
+	// Navigate to middleware_definitions to find the type enum instead.
+	mdSchema, ok := schema.Properties.Get("middleware_definitions")
 	if !ok {
-		t.Fatal("schema missing \"routes\" property")
+		t.Fatal("schema missing \"middleware_definitions\" property")
 	}
+	mdResolved := resolveRef(t, schema, mdSchema)
 
-	// routes is an array; get its items schema.
-	if routesSchema.Items == nil {
-		t.Fatal("routes schema has no items")
+	// middleware_definitions is a map; check the additional properties.
+	if mdResolved.AdditionalProperties == nil {
+		t.Fatal("middleware_definitions schema has no additionalProperties")
 	}
-	routeSchema := resolveRef(t, schema, routesSchema.Items)
-	if routeSchema.Properties == nil {
-		t.Fatal("route item schema has no properties")
-	}
+	mdItemResolved := resolveRef(t, schema, mdResolved.AdditionalProperties)
 
-	rateLimitSchema, ok := routeSchema.Properties.Get("rate_limit")
+	// Check the "type" field has enum values.
+	typeSchema, ok := mdItemResolved.Properties.Get("type")
 	if !ok {
-		t.Fatal("route schema missing \"rate_limit\" property")
+		t.Fatal("MiddlewareDefinition schema missing \"type\" property")
 	}
-	rateLimitResolved := resolveRef(t, schema, rateLimitSchema)
-	if rateLimitResolved.Properties == nil {
-		t.Fatal("rate_limit schema has no properties")
-	}
+	typeResolved := resolveRef(t, schema, typeSchema)
 
-	algorithmSchema, ok := rateLimitResolved.Properties.Get("algorithm")
-	if !ok {
-		t.Fatal("rate_limit schema missing \"algorithm\" property")
-	}
-	algorithmResolved := resolveRef(t, schema, algorithmSchema)
-
-	if len(algorithmResolved.Enum) == 0 {
-		t.Fatal("algorithm schema has no enum values")
+	if len(typeResolved.Enum) == 0 {
+		t.Fatal("MiddlewareDefinition.type schema has no enum values")
 	}
 
 	enumValues := make(map[string]bool)
-	for _, v := range algorithmResolved.Enum {
+	for _, v := range typeResolved.Enum {
 		if s, ok := v.(string); ok {
 			enumValues[s] = true
 		}
 	}
 
-	for _, want := range []string{"sliding_window", "leaky_bucket"} {
+	for _, want := range []string{"cors", "rate_limit", "auth", "transform"} {
 		if !enumValues[want] {
-			t.Errorf("algorithm enum missing value %q, got %v", want, algorithmResolved.Enum)
+			t.Errorf("MiddlewareDefinition.type enum missing value %q, got %v", want, typeResolved.Enum)
 		}
 	}
 }
@@ -148,13 +139,10 @@ func TestValidateAgainstSchema_ValidConfig(t *testing.T) {
 			WriteTimeout:    30 * time.Second,
 			IdleTimeout:     120 * time.Second,
 			ShutdownTimeout: 15 * time.Second,
+			MaxHeaderBytes:  1 << 20,
 		},
 		Logging: LoggingConfig{
 			Level: "info",
-		},
-		CORS: CORSConfig{
-			AllowedOrigins: []string{"*"},
-			MaxAge:         3600,
 		},
 		RateLimit: RateLimitGlobalConfig{
 			Backend: "memory",

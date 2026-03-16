@@ -1,0 +1,21 @@
+I want to create a Web app to orchestate multiple claude code sessions. The source of truth of the issues is github issues of a project, we can also create an issue from the UI and it will create the issue on the GH repo. The goal is to have multiple claude code sessions to paralallize the work as much as possible. Also this web app should be as an observavility to see the work and progress being done by a claude code agent.
+The first step is to define and create a PRD. The PRD will be saved in a GH issue and will have the goals, objectices and requeriments and acceptance criteria we want to build for a sprint. The web app will read a prompt and will create a complete PRD on a gh issue via claude code with a specalized agent or a skill. The PRD must be approved by the user.
+Once we have the PRD, a claude code with a skill will split the PRD into multiple sub tasks or sub issues with the enogh size, this taks will be the one we will work on and create a plan for each task.
+The workflow is as follows:
+TODO -> PLAN -> IN PROGRES -> VALIDATION -> AI REVIEW -> Human Review -> COMPLETED
+
+Here is the workflow explained:
+- move an issue from todo
+- move it to planning column and spawn a claude session to start working on the planning where the context be the gh issue content.
+- The plan will be deplayed to the user and he must approve to continue
+    - if the user approves continue next step
+    - the user can ask for changes, so the claude session will work on the changes.
+    - user can reject so the plan will be deleted and the issue will be move to todo
+- Move the issue to in-progress and start a claude session to start implementing in a worktree on the plan
+- Once the implementation is done move to validation, where some validation checks will be perfomerd like running test, linting etc
+- Then it will be moved to AI Review where a new claude sesion will be created to review the work done, if the agent find issues, it will be moved to IN PROGRESS to work on fixing the issues
+- Once the AI Review approves the changes a new PR will be created and passed to Human Review.
+
+At start a set of issues will be selected or created from the UI so we can work on them like in a sprint, when all the issues are complete we finish the sprint and we can close it and then seleect another set of issues to work on
+We can select the workftree or branch of a task an run the app on the repo to test it once is in Human Review
+The objective is that multiple claude code sessions work in parallel on the issues and

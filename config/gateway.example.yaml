@@ -347,6 +347,86 @@ routes:
     middlewares:
       - ref: cors-widgets              # Use route-specific CORS (must be first)
 
+  # --- Exact host matching ---
+  # Only matches requests whose Host header is exactly "api.example.com".
+  # Port is stripped automatically; matching is case-insensitive.
+  - name: "api-exact-host"
+    match:
+      path_regex: "^/api(?P<path>/.*)?$"
+      host: "api.example.com"
+    upstream:
+      url: "http://api-service:3004"
+      path_rewrite: "{path}"
+      timeout: 10s
+
+  # --- Wildcard host matching (single-level prefix) ---
+  # Matches *.example.com — e.g. tenant1.example.com, tenant2.example.com.
+  # Does NOT match: example.com (bare domain) or a.b.example.com (multi-level).
+  - name: "tenant-router"
+    match:
+      path_regex: "^/api(?P<path>/.*)?$"
+      host: "*.example.com"
+    upstream:
+      url: "http://tenant-service:3005"
+      path_rewrite: "{path}"
+      timeout: 10s
+
+  # --- Header matching: exact value ---
+  # The header value is treated as a regex pattern, auto-anchored to ^(?:...)$.
+  # A plain string like "v2" matches only the exact value "v2".
+  - name: "api-v2"
+    match:
+      path_regex: "^/api(?P<path>/.*)?$"
+      headers:
+        X-API-Version: "v2"            # Exact match on header value
+    upstream:
+      url: "http://api-v2:3006"
+      path_rewrite: "{path}"
+      timeout: 10s
+
+  # --- Header matching: regex ---
+  # Regex patterns are auto-anchored, so "v[0-9]+" matches "v1", "v23", etc.
+  # but not "version-1" (partial matches are impossible due to anchoring).
+  - name: "api-versioned"
+    match:
+      path_regex: "^/api(?P<path>/.*)?$"
+      headers:
+        X-API-Version: "v[0-9]+"       # Regex pattern on header value
+    upstream:
+      url: "http://api-versioned:3007"
+      path_rewrite: "{path}"
+      timeout: 10s
+
+  # --- Header matching: presence-only ---
+  # The special value "*" matches any request that includes the header,
+  # regardless of its value. Missing header = no match.
+  - name: "internal-only"
+    match:
+      path_regex: "^/internal(?P<path>/.*)?$"
+      headers:
+        X-Internal: "*"                 # Header must be present (any value)
+    upstream:
+      url: "http://internal-service:3008"
+      path_rewrite: "{path}"
+      timeout: 10s
+
+  # --- Combined matching: host + headers + methods ---
+  # All conditions use AND semantics — path, host, headers, and methods must
+  # ALL match for the route to be selected. Multiple headers also use AND.
+  # Place more specific routes before less specific ones (first-match-wins).
+  - name: "tenant-api-v2-internal"
+    match:
+      path_regex: "^/api(?P<path>/.*)?$"
+      methods: ["GET", "POST"]
+      host: "*.example.com"            # Wildcard host
+      headers:
+        X-API-Version: "v2"            # Exact header value
+        X-Internal: "*"                # Header presence check
+    upstream:
+      url: "http://tenant-v2-internal:3009"
+      path_rewrite: "{path}"
+      timeout: 10s
+
 # =============================================================================
 # Dynamic Variables (usable in transform headers/body values)
 # =============================================================================

@@ -1910,3 +1910,206 @@ routes: []
 		t.Errorf("unexpected error: %v", err)
 	}
 }
+
+func TestLoadConfig_InvalidHeaderRegex(t *testing.T) {
+	yamlContent := `
+routes:
+  - name: "bad-header"
+    match:
+      path_regex: "^/test"
+      headers:
+        X-Bad: "[invalid"
+    upstream:
+      url: "http://localhost:3000"
+`
+	cfgPath := writeConfig(t, yamlContent)
+
+	_, err := LoadConfig(cfgPath)
+	if err == nil {
+		t.Fatal("expected error for invalid header regex, got nil")
+	}
+	if !strings.Contains(err.Error(), "invalid header regex") {
+		t.Errorf("expected 'invalid header regex' in error, got: %v", err)
+	}
+	if !strings.Contains(err.Error(), "X-Bad") {
+		t.Errorf("expected header name 'X-Bad' in error, got: %v", err)
+	}
+}
+
+func TestLoadConfig_ValidHeaderConfig(t *testing.T) {
+	yamlContent := `
+routes:
+  - name: "header-route"
+    match:
+      path_regex: "^/test"
+      headers:
+        X-API-Version: "v2"
+        X-Internal: "*"
+        Accept: "application/vnd\\.api\\.v[0-9]+\\+json"
+    upstream:
+      url: "http://localhost:3000"
+`
+	cfgPath := writeConfig(t, yamlContent)
+
+	cfg, err := LoadConfig(cfgPath)
+	if err != nil {
+		t.Fatalf("LoadConfig returned error for valid header config: %v", err)
+	}
+
+	route := cfg.Routes[0]
+	if len(route.Match.Headers) != 3 {
+		t.Fatalf("expected 3 headers, got %d", len(route.Match.Headers))
+	}
+	if route.Match.Headers["X-API-Version"] != "v2" {
+		t.Errorf("expected X-API-Version=v2, got %q", route.Match.Headers["X-API-Version"])
+	}
+	if route.Match.Headers["X-Internal"] != "*" {
+		t.Errorf("expected X-Internal=*, got %q", route.Match.Headers["X-Internal"])
+	}
+}
+
+func TestLoadConfig_ValidExactHost(t *testing.T) {
+	yamlContent := `
+routes:
+  - name: "exact-host-route"
+    match:
+      path_regex: "^/test"
+      host: "api.example.com"
+    upstream:
+      url: "http://localhost:3000"
+`
+	cfgPath := writeConfig(t, yamlContent)
+
+	cfg, err := LoadConfig(cfgPath)
+	if err != nil {
+		t.Fatalf("LoadConfig returned error for valid exact host: %v", err)
+	}
+	if cfg.Routes[0].Match.Host != "api.example.com" {
+		t.Errorf("expected host api.example.com, got %q", cfg.Routes[0].Match.Host)
+	}
+}
+
+func TestLoadConfig_ValidWildcardHost(t *testing.T) {
+	yamlContent := `
+routes:
+  - name: "wildcard-host-route"
+    match:
+      path_regex: "^/test"
+      host: "*.example.com"
+    upstream:
+      url: "http://localhost:3000"
+`
+	cfgPath := writeConfig(t, yamlContent)
+
+	cfg, err := LoadConfig(cfgPath)
+	if err != nil {
+		t.Fatalf("LoadConfig returned error for valid wildcard host: %v", err)
+	}
+	if cfg.Routes[0].Match.Host != "*.example.com" {
+		t.Errorf("expected host *.example.com, got %q", cfg.Routes[0].Match.Host)
+	}
+}
+
+func TestLoadConfig_MalformedWildcardHost_DoubleWildcard(t *testing.T) {
+	yamlContent := `
+routes:
+  - name: "bad-host"
+    match:
+      path_regex: "^/test"
+      host: "*.*.com"
+    upstream:
+      url: "http://localhost:3000"
+`
+	cfgPath := writeConfig(t, yamlContent)
+
+	_, err := LoadConfig(cfgPath)
+	if err == nil {
+		t.Fatal("expected error for *.*.com wildcard, got nil")
+	}
+	if !strings.Contains(err.Error(), "invalid host") {
+		t.Errorf("expected 'invalid host' in error, got: %v", err)
+	}
+}
+
+func TestLoadConfig_MalformedWildcardHost_NoDot(t *testing.T) {
+	yamlContent := `
+routes:
+  - name: "bad-host"
+    match:
+      path_regex: "^/test"
+      host: "*example.com"
+    upstream:
+      url: "http://localhost:3000"
+`
+	cfgPath := writeConfig(t, yamlContent)
+
+	_, err := LoadConfig(cfgPath)
+	if err == nil {
+		t.Fatal("expected error for *example.com wildcard, got nil")
+	}
+	if !strings.Contains(err.Error(), "invalid host") {
+		t.Errorf("expected 'invalid host' in error, got: %v", err)
+	}
+}
+
+func TestLoadConfig_MalformedWildcardHost_MidString(t *testing.T) {
+	yamlContent := `
+routes:
+  - name: "bad-host"
+    match:
+      path_regex: "^/test"
+      host: "api.*.com"
+    upstream:
+      url: "http://localhost:3000"
+`
+	cfgPath := writeConfig(t, yamlContent)
+
+	_, err := LoadConfig(cfgPath)
+	if err == nil {
+		t.Fatal("expected error for api.*.com wildcard, got nil")
+	}
+	if !strings.Contains(err.Error(), "invalid host") {
+		t.Errorf("expected 'invalid host' in error, got: %v", err)
+	}
+}
+
+func TestLoadConfig_MalformedWildcardHost_TooShortSuffix(t *testing.T) {
+	yamlContent := `
+routes:
+  - name: "bad-host"
+    match:
+      path_regex: "^/test"
+      host: "*.com"
+    upstream:
+      url: "http://localhost:3000"
+`
+	cfgPath := writeConfig(t, yamlContent)
+
+	_, err := LoadConfig(cfgPath)
+	if err == nil {
+		t.Fatal("expected error for *.com wildcard, got nil")
+	}
+	if !strings.Contains(err.Error(), "invalid host") {
+		t.Errorf("expected 'invalid host' in error, got: %v", err)
+	}
+}
+
+func TestLoadConfig_NoHostMatchesAny(t *testing.T) {
+	yamlContent := `
+routes:
+  - name: "no-host-route"
+    match:
+      path_regex: "^/test"
+    upstream:
+      url: "http://localhost:3000"
+`
+	cfgPath := writeConfig(t, yamlContent)
+
+	cfg, err := LoadConfig(cfgPath)
+	if err != nil {
+		t.Fatalf("LoadConfig returned error for route without host: %v", err)
+	}
+	if cfg.Routes[0].Match.Host != "" {
+		t.Errorf("expected empty host, got %q", cfg.Routes[0].Match.Host)
+	}
+}

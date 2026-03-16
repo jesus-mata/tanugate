@@ -158,8 +158,10 @@ type RouteConfig struct {
 
 // MatchConfig holds request-matching criteria for a route.
 type MatchConfig struct {
-	PathRegex string   `yaml:"path_regex" jsonschema:"required"`
-	Methods   []string `yaml:"methods"`
+	PathRegex string            `yaml:"path_regex" jsonschema:"required"`
+	Methods   []string          `yaml:"methods"`
+	Host      string            `yaml:"host" jsonschema:"description=Host to match against (exact or wildcard e.g. *.example.com)"`
+	Headers   map[string]string `yaml:"headers" jsonschema:"description=Header matching rules (name -> regex pattern or * for presence-only)"`
 }
 
 // UpstreamConfig holds upstream target settings for a route.
@@ -394,6 +396,22 @@ func (cfg *GatewayConfig) semanticErrors() []string {
 			}
 		}
 
+		if h := route.Match.Host; h != "" {
+			if err := validateHostPattern(h); err != nil {
+				errs = append(errs, fmt.Sprintf("route %q: invalid host %q: %v", route.Name, h, err))
+			}
+		}
+
+		for hdrName, pattern := range route.Match.Headers {
+			if pattern == "*" {
+				continue // presence-only, no regex to compile
+			}
+			anchored := "^(?:" + pattern + ")$"
+			if _, err := regexp.Compile(anchored); err != nil {
+				errs = append(errs, fmt.Sprintf("route %q: invalid header regex for %q: %q: %v", route.Name, hdrName, pattern, err))
+			}
+		}
+
 		// Validate skip_middlewares entries reference global middleware names.
 		for _, name := range route.SkipMiddlewares {
 			if !globalRefNames[name] {
@@ -457,6 +475,41 @@ func (cfg *GatewayConfig) semanticErrors() []string {
 	}
 
 	return errs
+}
+
+// validateHostPattern checks that a host value is either a plain hostname or a
+// valid single-level wildcard of the form *.suffix. It rejects malformed
+// patterns like *.*.com, *example.com, and api.*.com.
+func validateHostPattern(host string) error {
+	if strings.Contains(host, "*") {
+		if !strings.HasPrefix(host, "*.") {
+			return fmt.Errorf("wildcard must start with '*.' (e.g. *.example.com)")
+		}
+		suffix := host[2:] // strip "*."
+		if suffix == "" {
+			return fmt.Errorf("wildcard suffix must not be empty")
+		}
+		if strings.Contains(suffix, "*") {
+			return fmt.Errorf("only a single leading wildcard is supported (e.g. *.example.com)")
+		}
+		// Suffix must have at least one dot (e.g. "example.com", not just "com").
+		if !strings.Contains(suffix, ".") {
+			return fmt.Errorf("wildcard suffix must contain at least two labels (e.g. *.example.com, not *.com)")
+		}
+		for _, label := range strings.Split(suffix, ".") {
+			if label == "" {
+				return fmt.Errorf("host contains empty label")
+			}
+		}
+		return nil
+	}
+	// Exact host: no wildcards. Validate it's not empty and has no empty labels.
+	for _, label := range strings.Split(host, ".") {
+		if label == "" {
+			return fmt.Errorf("host contains empty label")
+		}
+	}
+	return nil
 }
 
 // validateResolvedMiddlewares performs per-type validation on a set of resolved
@@ -750,6 +803,12 @@ func routeChanged(a, b *RouteConfig) bool {
 	if !stringSliceEqual(a.Match.Methods, b.Match.Methods) {
 		return true
 	}
+	if a.Match.Host != b.Match.Host {
+		return true
+	}
+	if !stringMapEqual(a.Match.Headers, b.Match.Headers) {
+		return true
+	}
 	if a.Upstream.URL != b.Upstream.URL || a.Upstream.PathRewrite != b.Upstream.PathRewrite || a.Upstream.Timeout != b.Upstream.Timeout {
 		return true
 	}
@@ -778,6 +837,18 @@ func middlewareRefsEqual(a, b []MiddlewareRef) bool {
 			return false
 		}
 		if !yamlNodeEqual(a[i].Config, b[i].Config) {
+			return false
+		}
+	}
+	return true
+}
+
+func stringMapEqual(a, b map[string]string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for k, v := range a {
+		if bv, ok := b[k]; !ok || v != bv {
 			return false
 		}
 	}

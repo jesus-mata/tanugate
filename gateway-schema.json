@@ -150,6 +150,17 @@
             "type": "string"
           },
           "type": "array"
+        },
+        "host": {
+          "type": "string",
+          "description": "Host to match against (exact or wildcard e.g. *.example.com)"
+        },
+        "headers": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "type": "object",
+          "description": "Header matching rules (name -\u003e regex pattern or * for presence-only)"
         }
       },
       "additionalProperties": false,

@@ -1457,3 +1457,85 @@ func TestIntegration_ConfigReload_TransportCleanup(t *testing.T) {
 			goroutineGrowth, baselineGoroutines, finalGoroutines)
 	}
 }
+
+func TestIntegration_HeaderBasedRouting(t *testing.T) {
+	// Two mock upstreams: v2 and default.
+	v2Upstream := &mockUpstream{}
+	v2Server := httptest.NewServer(v2Upstream)
+	t.Cleanup(v2Server.Close)
+
+	defaultUpstream := &mockUpstream{}
+	defaultServer := httptest.NewServer(defaultUpstream)
+	t.Cleanup(defaultServer.Close)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+
+	promRegistry := prometheus.NewRegistry()
+	metrics := observability.NewMetricsCollector(promRegistry)
+	limiter := ratelimit.NewMemoryLimiter(ctx)
+
+	gwConfig := &config.GatewayConfig{
+		RateLimit: config.RateLimitGlobalConfig{Backend: "memory"},
+		Routes: []config.RouteConfig{
+			{
+				Name: "v2-api",
+				Match: config.MatchConfig{
+					PathRegex: `^/api/(?P<rest>.*)$`,
+					Headers:   map[string]string{"X-API-Version": "v2"},
+				},
+				Upstream: config.UpstreamConfig{
+					URL:         v2Server.URL,
+					PathRewrite: "/v2/{rest}",
+					Timeout:     5 * time.Second,
+				},
+			},
+			{
+				Name: "default-api",
+				Match: config.MatchConfig{
+					PathRegex: `^/api/(?P<rest>.*)$`,
+				},
+				Upstream: config.UpstreamConfig{
+					URL:         defaultServer.URL,
+					PathRewrite: "/default/{rest}",
+					Timeout:     5 * time.Second,
+				},
+			},
+		},
+	}
+
+	deps := &pipeline.FactoryDeps{
+		Limiter:        limiter,
+		Authenticators: nil,
+		Metrics:        metrics,
+		TrustedProxies: nil,
+		Logger:         slog.Default(),
+	}
+	registry := pipeline.DefaultRegistry()
+
+	handler, cleanup, err := pipeline.BuildHandler(gwConfig, deps, registry)
+	if err != nil {
+		t.Fatalf("pipeline.BuildHandler failed: %v", err)
+	}
+	t.Cleanup(cleanup)
+
+	// Request with X-API-Version: v2 should route to the v2 upstream.
+	rr := doRequest(handler, "GET", "/api/items", map[string]string{"X-API-Version": "v2"}, "")
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected 200 for v2 route, got %d", rr.Code)
+	}
+	v2Last := v2Upstream.lastRequest()
+	if v2Last.Path != "/v2/items" {
+		t.Fatalf("expected v2 upstream to receive /v2/items, got %q", v2Last.Path)
+	}
+
+	// Request without the header should fall through to the default upstream.
+	rr2 := doRequest(handler, "GET", "/api/items", nil, "")
+	if rr2.Code != http.StatusOK {
+		t.Fatalf("expected 200 for default route, got %d", rr2.Code)
+	}
+	defaultLast := defaultUpstream.lastRequest()
+	if defaultLast.Path != "/default/items" {
+		t.Fatalf("expected default upstream to receive /default/items, got %q", defaultLast.Path)
+	}
+}

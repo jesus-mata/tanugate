@@ -32,6 +32,8 @@ Tanugate is an API gateway designed to sit between your clients and backend serv
 - **Regex-based path matching** with named capture groups (`(?P<name>...)`)
 - **Method filtering** per route (optional — all methods allowed if omitted)
 - **Path rewriting** with parameter substitution from captured groups
+- **Host matching** — exact or single-level wildcard (`*.example.com`)
+- **Header matching** — regex patterns, exact values, or presence-only checks with AND semantics
 - **First-match routing** — routes are evaluated in configuration order; route names must be unique
 
 ```yaml
@@ -44,6 +46,136 @@ routes:
       url: "http://users-service:8080"
       path_rewrite: "{path}"
       timeout: 10s
+```
+
+#### Host Matching
+
+Routes can be constrained to specific hostnames using the `match.host` field. If omitted, the route matches any host.
+
+**Exact host** — case-insensitive match against the `Host` header (port is stripped automatically):
+
+```yaml
+routes:
+  - name: "api-only"
+    match:
+      path_regex: "^/api(?P<path>/.*)?$"
+      host: "api.example.com"
+    upstream:
+      url: "http://api-backend:8080"
+      path_rewrite: "{path}"
+```
+
+**Wildcard host** — `*.` prefix matches a single subdomain level. `*.example.com` matches `api.example.com` and `app.example.com` but does **not** match the bare domain `example.com` or multi-level subdomains like `a.b.example.com`:
+
+```yaml
+routes:
+  - name: "tenant-router"
+    match:
+      path_regex: "^/api(?P<path>/.*)?$"
+      host: "*.example.com"
+    upstream:
+      url: "http://tenant-service:8080"
+      path_rewrite: "{path}"
+```
+
+#### Header Matching
+
+Routes can require specific request headers using the `match.headers` field. All listed headers must match (AND semantics). If omitted, the route matches regardless of headers.
+
+**Exact value** — the value is treated as a regex pattern, auto-anchored to match the full header value. A plain string like `v2` matches only the exact value `v2`:
+
+```yaml
+routes:
+  - name: "api-v2"
+    match:
+      path_regex: "^/api(?P<path>/.*)?$"
+      headers:
+        X-API-Version: "v2"
+    upstream:
+      url: "http://api-v2:8080"
+      path_rewrite: "{path}"
+```
+
+**Regex** — use regex syntax for flexible matching. Patterns are auto-anchored (`^(?:...)$`), so partial matches are not possible:
+
+```yaml
+routes:
+  - name: "api-v2-or-v3"
+    match:
+      path_regex: "^/api(?P<path>/.*)?$"
+      headers:
+        X-API-Version: "v[23]"
+    upstream:
+      url: "http://api-modern:8080"
+      path_rewrite: "{path}"
+```
+
+**Presence-only** — use `"*"` to match any request that includes the header, regardless of its value:
+
+```yaml
+routes:
+  - name: "internal-only"
+    match:
+      path_regex: "^/internal(?P<path>/.*)?$"
+      headers:
+        X-Internal: "*"
+    upstream:
+      url: "http://internal-service:8080"
+      path_rewrite: "{path}"
+```
+
+#### Combined Matching
+
+Host, headers, path, and methods can all be combined on a single route. All conditions must match:
+
+```yaml
+routes:
+  - name: "tenant-api-v2"
+    match:
+      path_regex: "^/api(?P<path>/.*)?$"
+      methods: ["GET", "POST"]
+      host: "*.example.com"
+      headers:
+        X-API-Version: "v2"
+        X-Internal: "*"
+    upstream:
+      url: "http://tenant-v2:8080"
+      path_rewrite: "{path}"
+```
+
+#### Route Ordering and Specificity
+
+Routes use **first-match-wins** semantics — the first route whose path, host, headers, and methods all match handles the request. Place more specific routes before less specific ones:
+
+```yaml
+routes:
+  # Most specific: exact host + header constraint
+  - name: "api-v2-prod"
+    match:
+      path_regex: "^/api(?P<path>/.*)?$"
+      host: "api.example.com"
+      headers:
+        X-API-Version: "v2"
+    upstream:
+      url: "http://api-v2-prod:8080"
+      path_rewrite: "{path}"
+
+  # Less specific: wildcard host, no header constraint
+  - name: "api-any-tenant"
+    match:
+      path_regex: "^/api(?P<path>/.*)?$"
+      host: "*.example.com"
+    upstream:
+      url: "http://api-default:8080"
+      path_rewrite: "{path}"
+
+  # Least specific: no host or header constraint (catch-all)
+  - name: "api-fallback"
+    match:
+      path_regex: "^/api(?P<path>/.*)?$"
+    upstream:
+      url: "http://api-fallback:8080"
+      path_rewrite: "{path}"
 ```
 
 ### Authentication

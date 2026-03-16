@@ -158,8 +158,9 @@ type RouteConfig struct {
 
 // MatchConfig holds request-matching criteria for a route.
 type MatchConfig struct {
-	PathRegex string   `yaml:"path_regex" jsonschema:"required"`
-	Methods   []string `yaml:"methods"`
+	PathRegex string            `yaml:"path_regex" jsonschema:"required"`
+	Methods   []string          `yaml:"methods"`
+	Headers   map[string]string `yaml:"headers" jsonschema:"description=Header matching rules (name -> regex pattern or * for presence-only)"`
 }
 
 // UpstreamConfig holds upstream target settings for a route.
@@ -391,6 +392,16 @@ func (cfg *GatewayConfig) semanticErrors() []string {
 		if route.Match.PathRegex != "" {
 			if _, err := regexp.Compile(route.Match.PathRegex); err != nil {
 				errs = append(errs, fmt.Sprintf("route %q: invalid path_regex %q: %v", route.Name, route.Match.PathRegex, err))
+			}
+		}
+
+		for hdrName, pattern := range route.Match.Headers {
+			if pattern == "*" {
+				continue // presence-only, no regex to compile
+			}
+			anchored := "^(?:" + pattern + ")$"
+			if _, err := regexp.Compile(anchored); err != nil {
+				errs = append(errs, fmt.Sprintf("route %q: invalid header regex for %q: %q: %v", route.Name, hdrName, pattern, err))
 			}
 		}
 
@@ -750,6 +761,9 @@ func routeChanged(a, b *RouteConfig) bool {
 	if !stringSliceEqual(a.Match.Methods, b.Match.Methods) {
 		return true
 	}
+	if !stringMapEqual(a.Match.Headers, b.Match.Headers) {
+		return true
+	}
 	if a.Upstream.URL != b.Upstream.URL || a.Upstream.PathRewrite != b.Upstream.PathRewrite || a.Upstream.Timeout != b.Upstream.Timeout {
 		return true
 	}
@@ -778,6 +792,18 @@ func middlewareRefsEqual(a, b []MiddlewareRef) bool {
 			return false
 		}
 		if !yamlNodeEqual(a[i].Config, b[i].Config) {
+			return false
+		}
+	}
+	return true
+}
+
+func stringMapEqual(a, b map[string]string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for k, v := range a {
+		if bv, ok := b[k]; !ok || v != bv {
 			return false
 		}
 	}

@@ -45,12 +45,20 @@ type MatchedRoute struct {
 	PathParams map[string]string
 }
 
+// headerMatcher holds a compiled header matching rule.
+type headerMatcher struct {
+	name         string         // canonical header name
+	regex        *regexp.Regexp // auto-anchored regex; nil when presenceOnly is true
+	presenceOnly bool           // true when the original pattern was "*"
+}
+
 // compiledRoute is the internal representation of a route after its regex has
 // been compiled and its allowed methods have been indexed for fast lookup.
 type compiledRoute struct {
 	name    string
 	regex   *regexp.Regexp
 	methods map[string]bool // nil means all methods are allowed
+	headers []headerMatcher // nil means no header constraints
 	handler http.Handler
 	config  *config.RouteConfig
 }
@@ -79,12 +87,29 @@ func New(configs []config.RouteConfig, handlers map[string]http.Handler) *Router
 			}
 		}
 
+		var hdrs []headerMatcher
+		for hdrName, pattern := range cfg.Match.Headers {
+			if pattern == "*" {
+				hdrs = append(hdrs, headerMatcher{
+					name:         hdrName,
+					presenceOnly: true,
+				})
+			} else {
+				anchored := "^(?:" + pattern + ")$"
+				hdrs = append(hdrs, headerMatcher{
+					name:  hdrName,
+					regex: regexp.MustCompile(anchored),
+				})
+			}
+		}
+
 		h := handlers[cfg.Name]
 
 		routes = append(routes, compiledRoute{
 			name:    cfg.Name,
 			regex:   re,
 			methods: methods,
+			headers: hdrs,
 			handler: h,
 			config:  cfg,
 		})
@@ -111,6 +136,28 @@ func (rt *Router) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			}
 			// Allow OPTIONS through for path-matched routes so CORS
 			// middleware can handle preflight requests.
+		}
+
+		// Check header constraints (AND semantics — all must match).
+		if len(cr.headers) > 0 {
+			headersMatch := true
+			for _, hm := range cr.headers {
+				val := r.Header.Get(hm.name)
+				if hm.presenceOnly {
+					if val == "" {
+						headersMatch = false
+						break
+					}
+				} else {
+					if !hm.regex.MatchString(val) {
+						headersMatch = false
+						break
+					}
+				}
+			}
+			if !headersMatch {
+				continue
+			}
 		}
 
 		// Extract named capture groups into PathParams.

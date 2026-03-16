@@ -1910,3 +1910,60 @@ routes: []
 		t.Errorf("unexpected error: %v", err)
 	}
 }
+
+func TestLoadConfig_InvalidHeaderRegex(t *testing.T) {
+	yamlContent := `
+routes:
+  - name: "bad-header"
+    match:
+      path_regex: "^/test"
+      headers:
+        X-Bad: "[invalid"
+    upstream:
+      url: "http://localhost:3000"
+`
+	cfgPath := writeConfig(t, yamlContent)
+
+	_, err := LoadConfig(cfgPath)
+	if err == nil {
+		t.Fatal("expected error for invalid header regex, got nil")
+	}
+	if !strings.Contains(err.Error(), "invalid header regex") {
+		t.Errorf("expected 'invalid header regex' in error, got: %v", err)
+	}
+	if !strings.Contains(err.Error(), "X-Bad") {
+		t.Errorf("expected header name 'X-Bad' in error, got: %v", err)
+	}
+}
+
+func TestLoadConfig_ValidHeaderConfig(t *testing.T) {
+	yamlContent := `
+routes:
+  - name: "header-route"
+    match:
+      path_regex: "^/test"
+      headers:
+        X-API-Version: "v2"
+        X-Internal: "*"
+        Accept: "application/vnd\\.api\\.v[0-9]+\\+json"
+    upstream:
+      url: "http://localhost:3000"
+`
+	cfgPath := writeConfig(t, yamlContent)
+
+	cfg, err := LoadConfig(cfgPath)
+	if err != nil {
+		t.Fatalf("LoadConfig returned error for valid header config: %v", err)
+	}
+
+	route := cfg.Routes[0]
+	if len(route.Match.Headers) != 3 {
+		t.Fatalf("expected 3 headers, got %d", len(route.Match.Headers))
+	}
+	if route.Match.Headers["X-API-Version"] != "v2" {
+		t.Errorf("expected X-API-Version=v2, got %q", route.Match.Headers["X-API-Version"])
+	}
+	if route.Match.Headers["X-Internal"] != "*" {
+		t.Errorf("expected X-Internal=*, got %q", route.Match.Headers["X-Internal"])
+	}
+}

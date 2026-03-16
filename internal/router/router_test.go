@@ -313,6 +313,380 @@ func TestRouter_ContextContainsMatchedRoute(t *testing.T) {
 	}
 }
 
+func TestRouter_HeaderExactValueMatch(t *testing.T) {
+	configs := []config.RouteConfig{
+		{
+			Name: "v2-api",
+			Match: config.MatchConfig{
+				PathRegex: `^/api/data$`,
+				Headers:   map[string]string{"X-API-Version": "v2"},
+			},
+		},
+	}
+
+	called := false
+	handlers := map[string]http.Handler{
+		"v2-api": http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			called = true
+			w.WriteHeader(http.StatusOK)
+		}),
+	}
+
+	router := New(configs, handlers)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/data", nil)
+	req.Header.Set("X-API-Version", "v2")
+	rr := httptest.NewRecorder()
+	router.ServeHTTP(rr, req)
+
+	if !called {
+		t.Fatal("expected handler to be called for exact header match")
+	}
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", rr.Code)
+	}
+}
+
+func TestRouter_HeaderExactValueMismatch(t *testing.T) {
+	configs := []config.RouteConfig{
+		{
+			Name: "v2-api",
+			Match: config.MatchConfig{
+				PathRegex: `^/api/data$`,
+				Headers:   map[string]string{"X-API-Version": "v2"},
+			},
+		},
+	}
+
+	handlers := map[string]http.Handler{
+		"v2-api": http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(http.StatusOK)
+		}),
+	}
+
+	router := New(configs, handlers)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/data", nil)
+	req.Header.Set("X-API-Version", "v3")
+	rr := httptest.NewRecorder()
+	router.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusNotFound {
+		t.Fatalf("expected 404 for header value mismatch, got %d", rr.Code)
+	}
+}
+
+func TestRouter_HeaderRegexMatch(t *testing.T) {
+	configs := []config.RouteConfig{
+		{
+			Name: "versioned-api",
+			Match: config.MatchConfig{
+				PathRegex: `^/api/data$`,
+				Headers:   map[string]string{"X-API-Version": `v[0-9]+`},
+			},
+		},
+	}
+
+	called := false
+	handlers := map[string]http.Handler{
+		"versioned-api": http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			called = true
+			w.WriteHeader(http.StatusOK)
+		}),
+	}
+
+	router := New(configs, handlers)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/data", nil)
+	req.Header.Set("X-API-Version", "v42")
+	rr := httptest.NewRecorder()
+	router.ServeHTTP(rr, req)
+
+	if !called {
+		t.Fatal("expected handler to be called for regex header match")
+	}
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", rr.Code)
+	}
+}
+
+func TestRouter_HeaderRegexAutoAnchored(t *testing.T) {
+	configs := []config.RouteConfig{
+		{
+			Name: "exact-v2",
+			Match: config.MatchConfig{
+				PathRegex: `^/api/data$`,
+				Headers:   map[string]string{"X-API-Version": "v2"},
+			},
+		},
+	}
+
+	handlers := map[string]http.Handler{
+		"exact-v2": http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(http.StatusOK)
+		}),
+	}
+
+	router := New(configs, handlers)
+
+	// "v2-beta" should NOT match "v2" because it's auto-anchored.
+	req := httptest.NewRequest(http.MethodGet, "/api/data", nil)
+	req.Header.Set("X-API-Version", "v2-beta")
+	rr := httptest.NewRecorder()
+	router.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusNotFound {
+		t.Fatalf("expected 404 for partial match (auto-anchored), got %d", rr.Code)
+	}
+}
+
+func TestRouter_HeaderPresenceOnly(t *testing.T) {
+	configs := []config.RouteConfig{
+		{
+			Name: "internal-route",
+			Match: config.MatchConfig{
+				PathRegex: `^/api/data$`,
+				Headers:   map[string]string{"X-Internal": "*"},
+			},
+		},
+	}
+
+	called := false
+	handlers := map[string]http.Handler{
+		"internal-route": http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			called = true
+			w.WriteHeader(http.StatusOK)
+		}),
+	}
+
+	router := New(configs, handlers)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/data", nil)
+	req.Header.Set("X-Internal", "anything")
+	rr := httptest.NewRecorder()
+	router.ServeHTTP(rr, req)
+
+	if !called {
+		t.Fatal("expected handler to be called for presence-only header")
+	}
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", rr.Code)
+	}
+}
+
+func TestRouter_HeaderPresenceOnlyMissing(t *testing.T) {
+	configs := []config.RouteConfig{
+		{
+			Name: "internal-route",
+			Match: config.MatchConfig{
+				PathRegex: `^/api/data$`,
+				Headers:   map[string]string{"X-Internal": "*"},
+			},
+		},
+	}
+
+	handlers := map[string]http.Handler{
+		"internal-route": http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(http.StatusOK)
+		}),
+	}
+
+	router := New(configs, handlers)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/data", nil)
+	// Do NOT set X-Internal header.
+	rr := httptest.NewRecorder()
+	router.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusNotFound {
+		t.Fatalf("expected 404 for missing presence-only header, got %d", rr.Code)
+	}
+}
+
+func TestRouter_HeaderANDSemantics_AllMatch(t *testing.T) {
+	configs := []config.RouteConfig{
+		{
+			Name: "multi-header-route",
+			Match: config.MatchConfig{
+				PathRegex: `^/api/data$`,
+				Headers: map[string]string{
+					"X-API-Version": "v2",
+					"X-Internal":    "*",
+				},
+			},
+		},
+	}
+
+	called := false
+	handlers := map[string]http.Handler{
+		"multi-header-route": http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			called = true
+			w.WriteHeader(http.StatusOK)
+		}),
+	}
+
+	router := New(configs, handlers)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/data", nil)
+	req.Header.Set("X-API-Version", "v2")
+	req.Header.Set("X-Internal", "true")
+	rr := httptest.NewRecorder()
+	router.ServeHTTP(rr, req)
+
+	if !called {
+		t.Fatal("expected handler to be called when all headers match")
+	}
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", rr.Code)
+	}
+}
+
+func TestRouter_HeaderANDSemantics_OneMismatch(t *testing.T) {
+	configs := []config.RouteConfig{
+		{
+			Name: "multi-header-route",
+			Match: config.MatchConfig{
+				PathRegex: `^/api/data$`,
+				Headers: map[string]string{
+					"X-API-Version": "v2",
+					"X-Internal":    "*",
+				},
+			},
+		},
+	}
+
+	handlers := map[string]http.Handler{
+		"multi-header-route": http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(http.StatusOK)
+		}),
+	}
+
+	router := New(configs, handlers)
+
+	// Only set one of the two required headers.
+	req := httptest.NewRequest(http.MethodGet, "/api/data", nil)
+	req.Header.Set("X-API-Version", "v2")
+	// X-Internal is missing.
+	rr := httptest.NewRecorder()
+	router.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusNotFound {
+		t.Fatalf("expected 404 when one header doesn't match (AND semantics), got %d", rr.Code)
+	}
+}
+
+func TestRouter_NoHeadersConstraint_MatchesAny(t *testing.T) {
+	configs := []config.RouteConfig{
+		{
+			Name: "no-headers-route",
+			Match: config.MatchConfig{
+				PathRegex: `^/api/data$`,
+			},
+		},
+	}
+
+	called := false
+	handlers := map[string]http.Handler{
+		"no-headers-route": http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			called = true
+			w.WriteHeader(http.StatusOK)
+		}),
+	}
+
+	router := New(configs, handlers)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/data", nil)
+	req.Header.Set("X-Random", "whatever")
+	rr := httptest.NewRecorder()
+	router.ServeHTTP(rr, req)
+
+	if !called {
+		t.Fatal("expected handler to be called when route has no header constraints")
+	}
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", rr.Code)
+	}
+}
+
+func TestRouter_HeaderCaseInsensitiveNames(t *testing.T) {
+	configs := []config.RouteConfig{
+		{
+			Name: "case-insensitive",
+			Match: config.MatchConfig{
+				PathRegex: `^/api/data$`,
+				Headers:   map[string]string{"x-api-version": "v2"},
+			},
+		},
+	}
+
+	called := false
+	handlers := map[string]http.Handler{
+		"case-insensitive": http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			called = true
+			w.WriteHeader(http.StatusOK)
+		}),
+	}
+
+	router := New(configs, handlers)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/data", nil)
+	req.Header.Set("X-Api-Version", "v2")
+	rr := httptest.NewRecorder()
+	router.ServeHTTP(rr, req)
+
+	if !called {
+		t.Fatal("expected handler to be called — header names should be case-insensitive")
+	}
+}
+
+func TestRouter_HeaderFirstMatchWins(t *testing.T) {
+	configs := []config.RouteConfig{
+		{
+			Name: "v2-route",
+			Match: config.MatchConfig{
+				PathRegex: `^/api/data$`,
+				Headers:   map[string]string{"X-API-Version": "v2"},
+			},
+		},
+		{
+			Name: "fallback-route",
+			Match: config.MatchConfig{
+				PathRegex: `^/api/data$`,
+			},
+		},
+	}
+
+	handlers := map[string]http.Handler{
+		"v2-route": http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(http.StatusOK)
+		}),
+		"fallback-route": http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(http.StatusAccepted)
+		}),
+	}
+
+	router := New(configs, handlers)
+
+	// With v2 header → should hit first route.
+	req := httptest.NewRequest(http.MethodGet, "/api/data", nil)
+	req.Header.Set("X-API-Version", "v2")
+	rr := httptest.NewRecorder()
+	router.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected 200 from v2-route, got %d", rr.Code)
+	}
+
+	// Without v2 header → should fall through to fallback.
+	req2 := httptest.NewRequest(http.MethodGet, "/api/data", nil)
+	rr2 := httptest.NewRecorder()
+	router.ServeHTTP(rr2, req2)
+
+	if rr2.Code != http.StatusAccepted {
+		t.Fatalf("expected 202 from fallback-route, got %d", rr2.Code)
+	}
+}
+
 func TestRouteFromContext_NilWhenMissing(t *testing.T) {
 	mr := RouteFromContext(context.Background())
 	if mr != nil {

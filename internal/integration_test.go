@@ -10,12 +10,14 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/golang-jwt/jwt/v5"
 	"github.com/jesus-mata/tanugate/internal/config"
 	"github.com/jesus-mata/tanugate/internal/middleware"
 	"github.com/jesus-mata/tanugate/internal/middleware/auth"
@@ -23,7 +25,6 @@ import (
 	"github.com/jesus-mata/tanugate/internal/observability"
 	"github.com/jesus-mata/tanugate/internal/pipeline"
 	"github.com/jesus-mata/tanugate/internal/router"
-	"github.com/golang-jwt/jwt/v5"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"gopkg.in/yaml.v3"
@@ -204,11 +205,11 @@ func newTestGateway(t *testing.T) *testGateway {
 			"global-cors": {
 				Type: "cors",
 				Config: mustYAMLNode(t, map[string]any{
-					"allowed_origins":    []string{"https://example.com"},
-					"allowed_methods":    []string{"GET", "POST", "PUT", "DELETE", "OPTIONS"},
-					"allowed_headers":    []string{"Authorization", "Content-Type", "X-API-Key"},
-					"allow_credentials":  true,
-					"max_age":            3600,
+					"allowed_origins":   []string{"https://example.com"},
+					"allowed_methods":   []string{"GET", "POST", "PUT", "DELETE", "OPTIONS"},
+					"allowed_headers":   []string{"Authorization", "Content-Type", "X-API-Key"},
+					"allow_credentials": true,
+					"max_age":           3600,
 				}),
 			},
 			"jwt-auth": {
@@ -268,11 +269,11 @@ func newTestGateway(t *testing.T) *testGateway {
 			"cors-override": {
 				Type: "cors",
 				Config: mustYAMLNode(t, map[string]any{
-					"allowed_origins":    []string{"https://override.example.com"},
-					"allowed_methods":    []string{"GET"},
-					"allowed_headers":    []string{"Authorization"},
-					"allow_credentials":  true,
-					"max_age":            600,
+					"allowed_origins":   []string{"https://override.example.com"},
+					"allowed_methods":   []string{"GET"},
+					"allowed_headers":   []string{"Authorization"},
+					"allow_credentials": true,
+					"max_age":           600,
 				}),
 			},
 		},
@@ -1349,4 +1350,110 @@ func TestBuildTestHandler_MiddlewareOrderMatchesProduction(t *testing.T) {
 		t.Fatalf("expected 429 (rate limited), got %d; rate limiter should run before auth", rr.Code)
 	}
 
+}
+
+// handlerRefWithCleanup mirrors cmd/gateway's handlerRef, which tracks the
+// cleanup function alongside the handler for transport lifecycle management.
+type handlerRefWithCleanup struct {
+	h       http.Handler
+	cleanup func()
+}
+
+func TestIntegration_ConfigReload_TransportCleanup(t *testing.T) {
+	// This test verifies that the shared http.Transport allocated by
+	// pipeline.BuildHandler is properly cleaned up on reload. Without cleanup,
+	// each reload leaks a transport's connection pool (goroutines + FDs).
+
+	mock := &mockUpstream{}
+	upstreamServer := httptest.NewServer(mock)
+	t.Cleanup(upstreamServer.Close)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+
+	authenticators := map[string]auth.Authenticator{}
+	promRegistry := prometheus.NewRegistry()
+	metrics := observability.NewMetricsCollector(promRegistry)
+	limiter := ratelimit.NewMemoryLimiter(ctx)
+
+	makeRoutes := func(name string) []config.RouteConfig {
+		return []config.RouteConfig{{
+			Name:  name,
+			Match: config.MatchConfig{PathRegex: `^/` + name + `/(?P<rest>.*)$`},
+			Upstream: config.UpstreamConfig{
+				URL:         upstreamServer.URL,
+				PathRewrite: "/api/{rest}",
+				Timeout:     5 * time.Second,
+			},
+		}}
+	}
+
+	buildHandler := func(routes []config.RouteConfig) (http.Handler, func()) {
+		cfg := makeSimpleGatewayConfig(routes)
+		deps := &pipeline.FactoryDeps{
+			Limiter:        limiter,
+			Authenticators: authenticators,
+			Metrics:        metrics,
+			TrustedProxies: nil,
+			Logger:         slog.Default(),
+		}
+		registry := pipeline.DefaultRegistry()
+		h, cleanup, err := pipeline.BuildHandler(cfg, deps, registry)
+		if err != nil {
+			t.Fatalf("BuildHandler failed: %v", err)
+		}
+		return h, cleanup
+	}
+
+	// Initial build.
+	h, cleanup := buildHandler(makeRoutes("v1"))
+	var current atomic.Pointer[handlerRefWithCleanup]
+	current.Store(&handlerRefWithCleanup{h: h, cleanup: cleanup})
+
+	// Record goroutine count after initial build stabilizes.
+	runtime.GC()
+	time.Sleep(50 * time.Millisecond)
+	baselineGoroutines := runtime.NumGoroutine()
+
+	// Simulate 10 config reloads, calling old cleanup on each swap.
+	var cleanupsCalled atomic.Int32
+	for i := range 10 {
+		name := fmt.Sprintf("v%d", i+2)
+		newH, newCleanup := buildHandler(makeRoutes(name))
+
+		old := current.Load()
+		wrappedCleanup := newCleanup
+		current.Store(&handlerRefWithCleanup{h: newH, cleanup: wrappedCleanup})
+
+		// Clean up old transport (mirrors handleReload in main.go).
+		if old.cleanup != nil {
+			old.cleanup()
+			cleanupsCalled.Add(1)
+		}
+	}
+
+	// Clean up the final handler.
+	if ref := current.Load(); ref.cleanup != nil {
+		ref.cleanup()
+		cleanupsCalled.Add(1)
+	}
+
+	// All 11 cleanups should have been called (10 old + 1 final).
+	if got := cleanupsCalled.Load(); got != 11 {
+		t.Errorf("expected 11 cleanup calls, got %d", got)
+	}
+
+	// Goroutine count should not have grown significantly.
+	// Allow some slack for test infrastructure goroutines.
+	runtime.GC()
+	time.Sleep(50 * time.Millisecond)
+	finalGoroutines := runtime.NumGoroutine()
+	goroutineGrowth := finalGoroutines - baselineGoroutines
+
+	// With proper cleanup, growth should be minimal (≤5).
+	// Without cleanup, each reload leaks transport goroutines (~2-4 per transport).
+	if goroutineGrowth > 5 {
+		t.Errorf("goroutine count grew by %d after 10 reloads (baseline=%d, final=%d); possible transport leak",
+			goroutineGrowth, baselineGoroutines, finalGoroutines)
+	}
 }

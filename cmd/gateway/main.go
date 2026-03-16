@@ -288,6 +288,9 @@ func handleReload(
 
 	newHandler, newCleanup, err := buildHandler(newCfg, limiter, authenticators, metrics, trustedProxies, logger)
 	if err != nil {
+		if newCleanup != nil {
+			newCleanup()
+		}
 		slog.Error("config reload failed: could not build handler, keeping current config", "error", err)
 		return
 	}

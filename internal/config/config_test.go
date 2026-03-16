@@ -1094,8 +1094,23 @@ routes:
 }
 
 func TestValidate_RateLimit_ValidAlgorithms(t *testing.T) {
-	for _, alg := range []string{"sliding_window", "leaky_bucket"} {
-		yaml := fmt.Sprintf(`
+	tests := []struct {
+		alg     string
+		backend string
+	}{
+		{"sliding_window", ""},
+		{"leaky_bucket", "redis"},
+	}
+	for _, tt := range tests {
+		var backendBlock string
+		if tt.backend == "redis" {
+			backendBlock = `
+rate_limit:
+  backend: "redis"
+  redis:
+    addr: "localhost:6379"`
+		}
+		yaml := fmt.Sprintf(`%s
 middleware_definitions:
   rl:
     type: rate_limit
@@ -1111,11 +1126,11 @@ routes:
       url: "http://localhost:8080"
     middlewares:
       - ref: rl
-`, alg)
+`, backendBlock, tt.alg)
 		cfgPath := writeConfig(t, yaml)
 		_, err := LoadConfig(cfgPath)
 		if err != nil {
-			t.Fatalf("unexpected error for algorithm=%q: %v", alg, err)
+			t.Fatalf("unexpected error for algorithm=%q: %v", tt.alg, err)
 		}
 	}
 }
@@ -1773,6 +1788,108 @@ routes:
 	}
 	if !strings.Contains(err.Error(), `duplicate route name "api"`) {
 		t.Errorf("unexpected error: %v", err)
+	}
+}
+
+func TestSemanticErrors_LeakyBucketRequiresRedis(t *testing.T) {
+	cfgPath := writeConfig(t, `
+rate_limit:
+  backend: "memory"
+middleware_definitions:
+  lb:
+    type: rate_limit
+    config:
+      requests: 100
+      window: 1m
+      algorithm: leaky_bucket
+middlewares:
+  - ref: lb
+routes:
+  - name: "test"
+    match:
+      path_regex: "^/test"
+    upstream:
+      url: "http://localhost:8080"
+`)
+	_, err := LoadConfig(cfgPath)
+	if err == nil {
+		t.Fatal("expected error for leaky_bucket with memory backend")
+	}
+	if !strings.Contains(err.Error(), "leaky_bucket") || !strings.Contains(err.Error(), "redis") {
+		t.Fatalf("expected error mentioning leaky_bucket and redis, got: %v", err)
+	}
+}
+
+func TestSemanticErrors_UnresolvedEnvVar_RedisAddr(t *testing.T) {
+	cfgPath := writeConfig(t, `
+rate_limit:
+  backend: "redis"
+  redis:
+    addr: "${REDIS_ADDR_UNSET}"
+routes: []
+`)
+	_, err := LoadConfig(cfgPath)
+	if err == nil {
+		t.Fatal("expected error for unresolved env var in redis.addr")
+	}
+	if !strings.Contains(err.Error(), "rate_limit.redis.addr") || !strings.Contains(err.Error(), "unresolved env var") {
+		t.Errorf("unexpected error: %v", err)
+	}
+}
+
+func TestSemanticErrors_CORSEmptyAllowedOrigins(t *testing.T) {
+	cfgPath := writeConfig(t, `
+middleware_definitions:
+  my-cors:
+    type: cors
+    config:
+      max_age: 3600
+middlewares:
+  - ref: my-cors
+routes:
+  - name: "test"
+    match:
+      path_regex: "^/test"
+    upstream:
+      url: "http://localhost:8080"
+`)
+	_, err := LoadConfig(cfgPath)
+	if err == nil {
+		t.Fatal("expected error for CORS with no allowed_origins")
+	}
+	if !strings.Contains(err.Error(), "no allowed_origins") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestValidate_MultipleCORSInChain(t *testing.T) {
+	cfgPath := writeConfig(t, `
+middleware_definitions:
+  global-cors:
+    type: cors
+    config:
+      allowed_origins: ["*"]
+  route-cors:
+    type: cors
+    config:
+      allowed_origins: ["https://example.com"]
+middlewares:
+  - ref: global-cors
+routes:
+  - name: "test"
+    match:
+      path_regex: "^/test"
+    upstream:
+      url: "http://localhost:8080"
+    middlewares:
+      - ref: route-cors
+`)
+	_, err := LoadConfig(cfgPath)
+	if err == nil {
+		t.Fatal("expected error for multiple CORS middlewares in effective chain")
+	}
+	if !strings.Contains(err.Error(), "CORS middlewares in effective chain") {
+		t.Fatalf("unexpected error: %v", err)
 	}
 }
 

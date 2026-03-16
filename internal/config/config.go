@@ -361,8 +361,13 @@ func (cfg *GatewayConfig) semanticErrors() []string {
 			errs = append(errs, fmt.Sprintf("auth_providers.%s.oidc.client_secret contains unresolved env var placeholder %q — set the variable or use a literal value", name, ap.OIDC.ClientSecret))
 		}
 	}
-	if cfg.RateLimit.Redis != nil && hasUnresolvedEnvVar(cfg.RateLimit.Redis.Password) {
-		errs = append(errs, fmt.Sprintf("rate_limit.redis.password contains unresolved env var placeholder %q — set the variable or use a literal value", cfg.RateLimit.Redis.Password))
+	if cfg.RateLimit.Redis != nil {
+		if hasUnresolvedEnvVar(cfg.RateLimit.Redis.Addr) {
+			errs = append(errs, fmt.Sprintf("rate_limit.redis.addr contains unresolved env var placeholder %q — set the variable or use a literal value", cfg.RateLimit.Redis.Addr))
+		}
+		if hasUnresolvedEnvVar(cfg.RateLimit.Redis.Password) {
+			errs = append(errs, fmt.Sprintf("rate_limit.redis.password contains unresolved env var placeholder %q — set the variable or use a literal value", cfg.RateLimit.Redis.Password))
+		}
 	}
 
 	// Validate global middleware refs resolve.
@@ -421,12 +426,18 @@ func (cfg *GatewayConfig) semanticErrors() []string {
 		}
 		effectiveChain = append(effectiveChain, routeResolved...)
 
-		// Validate CORS is first in effective chain (if present).
+		// Validate CORS: at most one, must be first.
+		corsCount := 0
 		for i, mw := range effectiveChain {
-			if mw.Type == "cors" && i != 0 {
-				errs = append(errs, fmt.Sprintf("route %q: CORS middleware %q must be first in the middleware chain, but is at position %d", route.Name, mw.Name, i))
-				break
+			if mw.Type == "cors" {
+				corsCount++
+				if i != 0 && corsCount == 1 {
+					errs = append(errs, fmt.Sprintf("route %q: CORS middleware %q must be first in the middleware chain, but is at position %d", route.Name, mw.Name, i))
+				}
 			}
+		}
+		if corsCount > 1 {
+			errs = append(errs, fmt.Sprintf("route %q: %d CORS middlewares in effective chain; use skip_middlewares to remove the global one before adding a route-level override", route.Name, corsCount))
 		}
 
 		// Validate rate_limit with claim: key_source has preceding auth.
@@ -473,6 +484,10 @@ func validateResolvedMiddlewares(context string, resolved []ResolvedMiddleware, 
 			default:
 				errs = append(errs, fmt.Sprintf("%s: middleware %q: unsupported algorithm %q, must be sliding_window or leaky_bucket", context, mw.Name, rlCfg.Algorithm))
 			}
+			if rlCfg.Algorithm == "leaky_bucket" && cfg.RateLimit.Backend != "redis" {
+				errs = append(errs, fmt.Sprintf("%s: middleware %q: algorithm %q requires rate_limit.backend \"redis\", got %q",
+					context, mw.Name, rlCfg.Algorithm, cfg.RateLimit.Backend))
+			}
 			if rlCfg.KeySource != "" && rlCfg.KeySource != "ip" {
 				if !strings.HasPrefix(rlCfg.KeySource, "header:") && !strings.HasPrefix(rlCfg.KeySource, "claim:") {
 					errs = append(errs, fmt.Sprintf("%s: middleware %q: invalid key_source %q (must be \"ip\", \"header:<name>\", \"claim:<name>\", or empty)", context, mw.Name, rlCfg.KeySource))
@@ -512,6 +527,16 @@ func validateResolvedMiddlewares(context string, resolved []ResolvedMiddleware, 
 			}
 			if seen["none"] && len(authCfg.Providers) > 1 {
 				errs = append(errs, fmt.Sprintf("%s: middleware %q: \"none\" cannot be combined with other providers", context, mw.Name))
+			}
+
+		case "cors":
+			corsCfg, ok := mw.Config.(*CORSConfig)
+			if !ok {
+				errs = append(errs, fmt.Sprintf("%s: middleware %q: internal error: expected *CORSConfig, got %T", context, mw.Name, mw.Config))
+				continue
+			}
+			if len(corsCfg.AllowedOrigins) == 0 {
+				errs = append(errs, fmt.Sprintf("%s: middleware %q: cors has no allowed_origins configured — all cross-origin requests will be rejected", context, mw.Name))
 			}
 		}
 	}

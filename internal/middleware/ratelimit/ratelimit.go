@@ -88,7 +88,7 @@ func NewRateLimitMiddleware(cfg *config.RateLimitConfig, routeName, middlewareNa
 				slog.Error("rate limiter backend error, failing open",
 					"route", routeName,
 					"middleware", middlewareName,
-					"key", compositeKey,
+					"key_source", cfg.KeySource,
 					"error", err,
 				)
 				if metrics != nil {

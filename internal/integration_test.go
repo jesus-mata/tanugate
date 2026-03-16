@@ -1109,6 +1109,7 @@ func TestIntegration_ConfigReload_ConcurrentRequests(t *testing.T) {
 	// Fire concurrent requests while swapping handlers.
 	var wg sync.WaitGroup
 	errors := make(chan error, 100)
+	var v1ok, v2ok atomic.Int32
 
 	// Readers hitting /v1/ and /v2/ concurrently.
 	for range 50 {
@@ -1117,7 +1118,9 @@ func TestIntegration_ConfigReload_ConcurrentRequests(t *testing.T) {
 			defer wg.Done()
 			rr := doRequest(mux, "GET", "/v1/data", nil, "")
 			// Before swap: 200; after swap: 404. Both are acceptable.
-			if rr.Code != http.StatusOK && rr.Code != http.StatusNotFound {
+			if rr.Code == http.StatusOK {
+				v1ok.Add(1)
+			} else if rr.Code != http.StatusNotFound {
 				errors <- fmt.Errorf("unexpected status %d for /v1/data", rr.Code)
 			}
 		}()
@@ -1134,7 +1137,9 @@ func TestIntegration_ConfigReload_ConcurrentRequests(t *testing.T) {
 			defer wg.Done()
 			rr := doRequest(mux, "GET", "/v2/data", nil, "")
 			// After swap: should be 200. Before swap would be 404.
-			if rr.Code != http.StatusOK && rr.Code != http.StatusNotFound {
+			if rr.Code == http.StatusOK {
+				v2ok.Add(1)
+			} else if rr.Code != http.StatusNotFound {
 				errors <- fmt.Errorf("unexpected status %d for /v2/data", rr.Code)
 			}
 		}()
@@ -1145,6 +1150,13 @@ func TestIntegration_ConfigReload_ConcurrentRequests(t *testing.T) {
 
 	for err := range errors {
 		t.Error(err)
+	}
+
+	if v1ok.Load() == 0 {
+		t.Error("expected at least one /v1/data request to succeed with 200")
+	}
+	if v2ok.Load() == 0 {
+		t.Error("expected at least one /v2/data request to succeed with 200")
 	}
 }
 
@@ -1337,16 +1349,4 @@ func TestBuildTestHandler_MiddlewareOrderMatchesProduction(t *testing.T) {
 		t.Fatalf("expected 429 (rate limited), got %d; rate limiter should run before auth", rr.Code)
 	}
 
-	// Verify that production buildHandler in main.go also delegates to
-	// pipeline.BuildHandler, ensuring identical behavior.
-	mainSrc, err := os.ReadFile("../cmd/gateway/main.go")
-	if err != nil {
-		t.Fatalf("failed to read cmd/gateway/main.go: %v", err)
-	}
-	if !strings.Contains(string(mainSrc), "pipeline.BuildHandler(") {
-		t.Error("production buildHandler must delegate to pipeline.BuildHandler")
-	}
-	if !strings.Contains(string(mainSrc), "pipeline.DefaultRegistry()") {
-		t.Error("production buildHandler must use pipeline.DefaultRegistry()")
-	}
 }

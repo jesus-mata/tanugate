@@ -144,6 +144,11 @@ func TestValidateAgainstSchema_ValidConfig(t *testing.T) {
 		Logging: LoggingConfig{
 			Level: "info",
 		},
+		Tracing: TracingConfig{
+			Exporter:    "otlp",
+			SampleRate:  1.0,
+			ServiceName: "tanugate",
+		},
 		RateLimit: RateLimitGlobalConfig{
 			Backend: "memory",
 		},

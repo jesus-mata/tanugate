@@ -20,6 +20,7 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/collectors"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
+	"go.opentelemetry.io/otel/trace"
 )
 
 // handlerRef wraps an http.Handler and its cleanup function for use with
@@ -145,7 +146,23 @@ func runServe() {
 	registry.MustRegister(collectors.NewGoCollector())
 	metrics := observability.NewMetricsCollector(registry)
 
-	handler, handlerCleanup, err := buildHandler(cfg, limiter, authenticators, metrics, trustedProxies, logger)
+	// Initialize tracing.
+	var tracerProvider trace.TracerProvider
+	var tracingShutdown func(context.Context) error
+	if cfg.Tracing.Enabled {
+		tp, shutdown, err := observability.NewTracerProvider(cfg.Tracing)
+		if err != nil {
+			slog.Error("failed to create tracer provider", "error", err)
+			os.Exit(1)
+		}
+		tracerProvider = tp
+		tracingShutdown = shutdown
+		slog.Info("Tracing enabled", "exporter", cfg.Tracing.Exporter, "service_name", cfg.Tracing.ServiceName, "sample_rate", cfg.Tracing.SampleRate)
+	} else {
+		slog.Info("Tracing disabled")
+	}
+
+	handler, handlerCleanup, err := buildHandler(cfg, limiter, authenticators, metrics, trustedProxies, logger, tracerProvider)
 	if err != nil {
 		slog.Error("failed to build handler", "error", err)
 		os.Exit(1)
@@ -187,7 +204,7 @@ loop:
 		case sig := <-sigCh:
 			switch sig {
 			case syscall.SIGHUP:
-				handleReload(*configPath, &cfgPtr, &current, limiter, authenticators, metrics, trustedProxies, logger)
+				handleReload(*configPath, &cfgPtr, &current, limiter, authenticators, metrics, trustedProxies, logger, tracerProvider)
 			default:
 				break loop
 			}
@@ -207,6 +224,13 @@ loop:
 	if err := srv.Shutdown(shutdownCtx); err != nil {
 		slog.Error("server forced to shutdown", "error", err)
 		os.Exit(1)
+	}
+
+	// Flush and shut down tracing provider.
+	if tracingShutdown != nil {
+		if err := tracingShutdown(shutdownCtx); err != nil {
+			slog.Error("failed to shut down tracer provider", "error", err)
+		}
 	}
 
 	// Close idle connections on the shared transport.
@@ -246,6 +270,7 @@ func buildHandler(
 	metrics *observability.MetricsCollector,
 	trustedProxies []*net.IPNet,
 	logger *slog.Logger,
+	tracerProvider trace.TracerProvider,
 ) (http.Handler, func(), error) {
 	deps := &pipeline.FactoryDeps{
 		Limiter:        limiter,
@@ -253,6 +278,7 @@ func buildHandler(
 		Metrics:        metrics,
 		TrustedProxies: trustedProxies,
 		Logger:         logger,
+		TracerProvider: tracerProvider,
 	}
 	registry := pipeline.DefaultRegistry()
 	return pipeline.BuildHandler(cfg, deps, registry)
@@ -270,6 +296,7 @@ func handleReload(
 	metrics *observability.MetricsCollector,
 	trustedProxies []*net.IPNet,
 	logger *slog.Logger,
+	tracerProvider trace.TracerProvider,
 ) {
 	slog.Info("Received SIGHUP, reloading configuration...", "path", configPath)
 
@@ -286,7 +313,7 @@ func handleReload(
 		slog.Warn("non-reloadable change detected (ignored)", "detail", w)
 	}
 
-	newHandler, newCleanup, err := buildHandler(newCfg, limiter, authenticators, metrics, trustedProxies, logger)
+	newHandler, newCleanup, err := buildHandler(newCfg, limiter, authenticators, metrics, trustedProxies, logger, tracerProvider)
 	if err != nil {
 		if newCleanup != nil {
 			newCleanup()

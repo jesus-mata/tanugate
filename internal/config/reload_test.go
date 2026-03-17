@@ -659,3 +659,129 @@ func TestDiffSummary_MultipleChanges(t *testing.T) {
 		t.Errorf("expected add and remove changes, got %v", changes)
 	}
 }
+
+func TestNonReloadableChanges_TracingChange(t *testing.T) {
+	old := &GatewayConfig{
+		Tracing: TracingConfig{Enabled: false, Exporter: "stdout", SampleRate: 1.0, ServiceName: "tanugate"},
+	}
+	new := &GatewayConfig{
+		Tracing: TracingConfig{Enabled: true, Exporter: "stdout", SampleRate: 1.0, ServiceName: "tanugate"},
+	}
+
+	warnings := NonReloadableChanges(old, new)
+	found := false
+	for _, w := range warnings {
+		if strings.Contains(w, "tracing") {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("expected tracing non-reloadable warning, got %v", warnings)
+	}
+}
+
+func TestNonReloadableChanges_TracingNoChange(t *testing.T) {
+	cfg := &GatewayConfig{
+		Tracing: TracingConfig{Enabled: true, Exporter: "stdout", SampleRate: 0.5, ServiceName: "svc"},
+	}
+
+	warnings := NonReloadableChanges(cfg, cfg)
+	for _, w := range warnings {
+		if strings.Contains(w, "tracing") {
+			t.Errorf("unexpected tracing warning for identical config: %q", w)
+		}
+	}
+}
+
+func TestTracingConfig_Defaults(t *testing.T) {
+	yaml := `
+routes:
+  - name: "test"
+    match:
+      path_regex: "^/test"
+    upstream:
+      url: "http://localhost:8080"
+`
+	cfgPath := writeConfig(t, yaml)
+	cfg, err := LoadConfig(cfgPath)
+	if err != nil {
+		t.Fatalf("LoadConfig error: %v", err)
+	}
+
+	if cfg.Tracing.Enabled != false {
+		t.Errorf("Tracing.Enabled = %v, want false", cfg.Tracing.Enabled)
+	}
+	if cfg.Tracing.Exporter != "otlp" {
+		t.Errorf("Tracing.Exporter = %q, want %q", cfg.Tracing.Exporter, "otlp")
+	}
+	if cfg.Tracing.SampleRate != 1.0 {
+		t.Errorf("Tracing.SampleRate = %v, want 1.0", cfg.Tracing.SampleRate)
+	}
+	if cfg.Tracing.ServiceName != "tanugate" {
+		t.Errorf("Tracing.ServiceName = %q, want %q", cfg.Tracing.ServiceName, "tanugate")
+	}
+	if cfg.Tracing.Insecure != false {
+		t.Errorf("Tracing.Insecure = %v, want false", cfg.Tracing.Insecure)
+	}
+}
+
+func TestTracingConfig_ExplicitValues(t *testing.T) {
+	yaml := `
+tracing:
+  enabled: true
+  exporter: stdout
+  sample_rate: 0.5
+  service_name: my-gateway
+  insecure: true
+
+routes:
+  - name: "test"
+    match:
+      path_regex: "^/test"
+    upstream:
+      url: "http://localhost:8080"
+`
+	cfgPath := writeConfig(t, yaml)
+	cfg, err := LoadConfig(cfgPath)
+	if err != nil {
+		t.Fatalf("LoadConfig error: %v", err)
+	}
+
+	if cfg.Tracing.Enabled != true {
+		t.Errorf("Tracing.Enabled = %v, want true", cfg.Tracing.Enabled)
+	}
+	if cfg.Tracing.Exporter != "stdout" {
+		t.Errorf("Tracing.Exporter = %q, want %q", cfg.Tracing.Exporter, "stdout")
+	}
+	if cfg.Tracing.SampleRate != 0.5 {
+		t.Errorf("Tracing.SampleRate = %v, want 0.5", cfg.Tracing.SampleRate)
+	}
+	if cfg.Tracing.ServiceName != "my-gateway" {
+		t.Errorf("Tracing.ServiceName = %q, want %q", cfg.Tracing.ServiceName, "my-gateway")
+	}
+	if cfg.Tracing.Insecure != true {
+		t.Errorf("Tracing.Insecure = %v, want true", cfg.Tracing.Insecure)
+	}
+}
+
+func TestTracingConfig_InvalidExporter(t *testing.T) {
+	yaml := `
+tracing:
+  exporter: "zipkin"
+
+routes:
+  - name: "test"
+    match:
+      path_regex: "^/test"
+    upstream:
+      url: "http://localhost:8080"
+`
+	cfgPath := writeConfig(t, yaml)
+	_, err := LoadConfig(cfgPath)
+	if err == nil {
+		t.Fatal("expected error for invalid exporter, got nil")
+	}
+	if !strings.Contains(err.Error(), "exporter") {
+		t.Errorf("expected error about exporter, got: %v", err)
+	}
+}

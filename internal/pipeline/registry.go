@@ -11,6 +11,7 @@ import (
 	"github.com/jesus-mata/tanugate/internal/middleware/ratelimit"
 
 	"github.com/jesus-mata/tanugate/internal/observability"
+	"go.opentelemetry.io/otel/trace"
 )
 
 // FactoryDeps holds shared resources that middleware factories need.
@@ -20,6 +21,7 @@ type FactoryDeps struct {
 	Metrics        *observability.MetricsCollector
 	TrustedProxies []*net.IPNet
 	Logger         *slog.Logger
+	TracerProvider trace.TracerProvider
 }
 
 // Factory creates a Middleware from a resolved config.

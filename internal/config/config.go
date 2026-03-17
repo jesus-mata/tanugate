@@ -45,10 +45,21 @@ type ResolvedMiddleware struct {
 	Config any    // typed config
 }
 
+
+// TracingConfig holds distributed tracing settings.
+type TracingConfig struct {
+	Enabled     bool    `yaml:"enabled" jsonschema:"default=false,description=Enable distributed tracing"`
+	Exporter    string  `yaml:"exporter" jsonschema:"default=otlp,enum=otlp,enum=stdout,description=Trace exporter type"`
+	Endpoint    string  `yaml:"endpoint" jsonschema:"description=OTLP collector endpoint (e.g. localhost:4317)"`
+	SampleRate  float64 `yaml:"sample_rate" jsonschema:"default=1.0,minimum=0,maximum=1,description=Sampling rate (0.0 to 1.0)"`
+	ServiceName string  `yaml:"service_name" jsonschema:"default=tanugate,description=Service name reported in traces"`
+	Insecure    bool    `yaml:"insecure" jsonschema:"default=false,description=Use insecure connection to collector"`
+}
 // GatewayConfig is the top-level configuration for the API gateway.
 type GatewayConfig struct {
 	Server                ServerConfig                       `yaml:"server" jsonschema:"description=HTTP server settings"`
 	Logging               LoggingConfig                      `yaml:"logging" jsonschema:"description=Logging configuration"`
+	Tracing               TracingConfig                      `yaml:"tracing" jsonschema:"description=Distributed tracing configuration"`
 	RateLimit             RateLimitGlobalConfig              `yaml:"rate_limit" jsonschema:"description=Global rate limiting settings"`
 	AuthProviders         map[string]AuthProvider            `yaml:"auth_providers" jsonschema:"description=Named authentication providers"`
 	MiddlewareDefinitions map[string]MiddlewareDefinition    `yaml:"middleware_definitions" jsonschema:"description=Reusable middleware definitions"`
@@ -287,6 +298,15 @@ func applyDefaults(cfg *GatewayConfig) {
 	if cfg.RateLimit.Backend == "" {
 		cfg.RateLimit.Backend = "memory"
 	}
+	if cfg.Tracing.Exporter == "" {
+		cfg.Tracing.Exporter = "otlp"
+	}
+	if cfg.Tracing.SampleRate == 0 {
+		cfg.Tracing.SampleRate = 1.0
+	}
+	if cfg.Tracing.ServiceName == "" {
+		cfg.Tracing.ServiceName = "tanugate"
+	}
 
 	if cfg.RateLimit.Backend == "redis" && cfg.RateLimit.Redis != nil {
 		r := cfg.RateLimit.Redis
@@ -337,6 +357,14 @@ func hasUnresolvedEnvVar(s string) bool {
 // resolution, auth provider references, etc.).
 func (cfg *GatewayConfig) semanticErrors() []string {
 	var errs []string
+
+	// Validate tracing exporter value.
+	switch cfg.Tracing.Exporter {
+	case "otlp", "stdout":
+		// valid
+	default:
+		errs = append(errs, fmt.Sprintf("tracing.exporter %q is not valid, must be \"otlp\" or \"stdout\"", cfg.Tracing.Exporter))
+	}
 
 	// Duplicate route names cause silent handler overwrites in the pipeline builder.
 	routeNames := make(map[string]bool, len(cfg.Routes))
@@ -642,6 +670,11 @@ func NonReloadableChanges(old, new *GatewayConfig) []string {
 		warnings = append(warnings, fmt.Sprintf("logging.level changed (%q -> %q) — requires restart", old.Logging.Level, new.Logging.Level))
 	}
 
+
+	if !tracingConfigEqual(old.Tracing, new.Tracing) {
+		warnings = append(warnings, "tracing settings changed — requires restart")
+	}
+
 	return warnings
 }
 
@@ -657,6 +690,12 @@ func redisConfigEqual(a, b *RedisConfig) bool {
 		a.DialTimeout == b.DialTimeout && a.ReadTimeout == b.ReadTimeout &&
 		a.WriteTimeout == b.WriteTimeout && a.MaxRetries == b.MaxRetries &&
 		a.QueryTimeout == b.QueryTimeout && a.TLSEnabled == b.TLSEnabled
+}
+
+func tracingConfigEqual(a, b TracingConfig) bool {
+	return a.Enabled == b.Enabled && a.Exporter == b.Exporter &&
+		a.Endpoint == b.Endpoint && a.SampleRate == b.SampleRate &&
+		a.ServiceName == b.ServiceName && a.Insecure == b.Insecure
 }
 
 func authProvidersEqual(a, b map[string]AuthProvider) bool {

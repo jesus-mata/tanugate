@@ -124,13 +124,20 @@ func BuildHandler(
 	// 3. Create the router.
 	r := router.New(cfg.Routes, handlers)
 
-	// 4. Build global chain (recovery, requestID, logging, metrics).
-	globalChain := middleware.Chain(
+	// 4. Build global chain (recovery, requestID, logging, metrics, tracing).
+	//    Tracing is outermost so it covers the entire request lifecycle.
+	globalMiddlewares := []middleware.Middleware{
 		middleware.Recovery(),
 		middleware.RequestID(),
 		middleware.Logging(deps.Logger),
 		deps.Metrics.Middleware(),
-	)
+	}
+	if deps.TracerProvider != nil {
+		globalMiddlewares = append([]middleware.Middleware{
+			middleware.Tracing(deps.TracerProvider),
+		}, globalMiddlewares...)
+	}
+	globalChain := middleware.Chain(globalMiddlewares...)
 
 	return globalChain(r), cleanup, nil
 }

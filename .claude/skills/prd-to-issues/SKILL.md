@@ -66,6 +66,10 @@ Then after creating all issues, link the issues to its parent PRD issue using `g
 
 A concise description of this vertical slice. Describe the end-to-end behavior, not layer-by-layer implementation. Reference specific sections of the parent PRD rather than duplicating content.
 
+# Implementation
+
+Important details of how to implement the issue. Be concise but detailed. Base it on the PRD. Ask user for clarification if needed.
+
 ## Acceptance criteria
 
 - [ ] Criterion 1

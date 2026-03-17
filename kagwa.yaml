@@ -1,0 +1,33 @@
+# Kagwa configuration
+# Copy this file to kagwa.yaml and customize for your project.
+
+# Label that marks sub-issues as ready to be processed
+# label: "ready"
+
+# Maximum fix iterations per ticket before stopping the batch
+max_iterations: 10
+
+# Git branch prefix for worktree branches
+branch_prefix: "issue"
+
+# Keep the worktree after PR creation (default: removed)
+keep_worktree: false
+
+# Stream Claude output live to terminal
+verbose: true
+
+# Claude Code skill name for creating sub-issues from a PRD
+skill_name: "create-sub-issues"
+
+# Claude models per workflow step
+models:
+  planning: "claude-opus-4-6"
+  implementation: "claude-opus-4-6"
+  review: "claude-sonnet-4-6"
+
+# Shell commands to validate each ticket's implementation
+# Runs sequentially; stops at first failure
+validation_commands:
+  - "go build ./..."
+  - "go test ./..."
+  - "golangci-lint run"
